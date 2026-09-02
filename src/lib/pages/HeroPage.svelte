@@ -452,6 +452,9 @@
 						minute: "2-digit",
 					});
 
+					if (!color) color = "#3b82f6";
+					if (!courseName) courseName = "Assignment";
+
 					return {
 						id: e.id,
 						event: e,

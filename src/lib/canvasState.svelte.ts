@@ -1,5 +1,11 @@
 import { pb, POCKETBASE_URL } from './pocketbase';
 import { authState } from './authState.svelte';
+import {
+	type TaskRecord,
+	type CalendarRecord,
+	getTaskRecords,
+	getCalendarRecords,
+} from './pocketbaseActions';
 
 export interface CanvasCourse {
 	id: number;
@@ -88,31 +94,14 @@ export function classifyCourse(course: CanvasCourse): 'previous' | 'current' | '
 	return 'current';
 }
 
-export interface CanvasTask {
-	id: string;
+export interface CanvasTask extends TaskRecord {
 	user: string;
-	calendar?: string;
-	name: string;
 	status: 'todo' | 'done' | string;
 	priority: 'low' | 'med' | 'high' | string;
-	due_date?: string;
-	fake_due_date?: string;
-	created?: string;
-	updated?: string;
 }
 
-export interface CanvasCalendarRecord {
-	id: string;
+export interface CanvasCalendarRecord extends CalendarRecord {
 	user: string;
-	name: string;
-	color?: string;
-	source?: string;
-	visible?: boolean;
-	nickname?: string;
-	course_id?: string;
-	calendar_id?: string;
-	created?: string;
-	updated?: string;
 }
 
 class CanvasState {
@@ -266,10 +255,9 @@ class CanvasState {
 	async fetchTasks(): Promise<CanvasTask[]> {
 		if (!pb.authStore.isValid) return [];
 		try {
-			const records = await pb.collection('tasks').getFullList<CanvasTask>({
+			const records = (await getTaskRecords({
 				sort: 'due_date',
-				requestKey: null
-			});
+			})) as CanvasTask[];
 			this.tasks = records;
 			return records;
 		} catch (err: any) {
@@ -281,9 +269,7 @@ class CanvasState {
 	async fetchCalendars(): Promise<CanvasCalendarRecord[]> {
 		if (!pb.authStore.isValid) return [];
 		try {
-			const records = await pb.collection('calendars').getFullList<CanvasCalendarRecord>({
-				requestKey: null
-			});
+			const records = (await getCalendarRecords()) as CanvasCalendarRecord[];
 			this.calendars = records;
 			return records;
 		} catch (err: any) {

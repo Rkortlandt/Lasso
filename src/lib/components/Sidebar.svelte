@@ -35,31 +35,16 @@
 	const GOOGLE_CALENDARS_STORAGE_KEY = "lasso_sidebar_google_calendars_open";
 	const STORAGE_COLLAPSED_KEY = "lasso_sidebar_collapsed_calendars";
 
-	interface PocketBaseCalendar {
-		id: string;
-		name: string;
-		color?: string;
-		source?: string;
-		visible?: boolean;
-		nickname?: string;
-		course_id?: string;
-		calendar_id?: string;
-	}
+	import {
+		type CalendarRecord,
+		type TaskRecord,
+		getCalendarRecords,
+		getTaskRecords,
+		updateTaskRecord,
+	} from "$lib/pocketbaseActions";
 
-	interface PocketBaseTask {
-		id: string;
-		calendar?: string | string[] | Record<string, any>;
-		calendar_id?: string | string[];
-		name: string;
-		status: "todo" | "done" | string;
-		priority?: string;
-		grade?: string;
-		due_date?: string;
-		fake_due_date?: string;
-		expand?: {
-			calendar?: PocketBaseCalendar;
-		};
-	}
+	type PocketBaseCalendar = CalendarRecord;
+	type PocketBaseTask = TaskRecord;
 
 	let isCalendarOpen = $state(
 		typeof window !== "undefined"
@@ -213,27 +198,14 @@
 		isLoadingTasks = true;
 		try {
 			const [cals, tks] = await Promise.all([
-				pb
-					.collection("calendars")
-					.getFullList<PocketBaseCalendar>({
-						sort: "name",
-						requestKey: null,
-					})
-					.catch((e) => {
-						console.warn("Failed to fetch calendars:", e);
-						return [];
-					}),
-				pb
-					.collection("tasks")
-					.getFullList<PocketBaseTask>({
-						sort: "due_date",
-						expand: "calendar",
-						requestKey: null,
-					})
-					.catch((e) => {
-						console.warn("Failed to fetch tasks:", e);
-						return [];
-					}),
+				getCalendarRecords({ sort: "name" }).catch((e) => {
+					console.warn("Failed to fetch calendars:", e);
+					return [];
+				}),
+				getTaskRecords({ sort: "due_date", expand: "calendar" }).catch((e) => {
+					console.warn("Failed to fetch tasks:", e);
+					return [];
+				}),
 			]);
 
 			calendars = cals;
@@ -269,7 +241,7 @@
 		);
 
 		try {
-			await pb.collection("tasks").update(task.id, { status: nextStatus });
+			await updateTaskRecord(task.id, { status: nextStatus });
 		} catch (err) {
 			console.error("Failed to update task:", err);
 			// Rollback on failure

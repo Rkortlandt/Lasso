@@ -15,25 +15,17 @@
 	import { pb } from "$lib/pocketbase";
 	import { calendarVisibilityState } from "$lib/calendarVisibilityState.svelte";
 	import { fade, slide, scale } from "svelte/transition";
-
-	interface CalendarRecord {
-		id: string;
-		name: string;
-		color?: string;
-		nickname?: string;
-		course_id?: string;
-	}
+	import {
+		type CalendarRecord,
+		getCalendarRecords,
+	} from "$lib/pocketbaseActions";
 
 	let pbCalendars = $state<CalendarRecord[]>([]);
 
 	async function loadPocketBaseCalendars() {
 		if (!pb.authStore.isValid) return;
 		try {
-			pbCalendars = await pb
-				.collection("calendars")
-				.getFullList<CalendarRecord>({
-					requestKey: null,
-				});
+			pbCalendars = await getCalendarRecords({ sort: "name" });
 		} catch (err) {
 			console.warn("Failed to load calendars in CanvasCard:", err);
 		}
