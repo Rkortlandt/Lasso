@@ -240,6 +240,24 @@ func main() {
 		return nil
 	})
 
+	// Ensure an event is never marked as both an announcement and a deadline
+	app.OnRecordCreate("events").BindFunc(func(e *core.RecordEvent) error {
+		if e.Record.GetBool("announcement") {
+			e.Record.Set("deadline", false)
+		} else if e.Record.GetBool("deadline") {
+			e.Record.Set("announcement", false)
+		}
+		return e.Next()
+	})
+	app.OnRecordUpdate("events").BindFunc(func(e *core.RecordEvent) error {
+		if e.Record.GetBool("announcement") {
+			e.Record.Set("deadline", false)
+		} else if e.Record.GetBool("deadline") {
+			e.Record.Set("announcement", false)
+		}
+		return e.Next()
+	})
+
 	// Register custom endpoints for Canvas LMS and Google Calendar
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
 		// Ensure grade field exists on tasks collection
@@ -252,7 +270,7 @@ func main() {
 			}
 		}
 
-		// Ensure Google sync fields exist on events collection and access rules match calendars/tasks
+		// Ensure Google sync and announcement fields exist on events collection and access rules match calendars/tasks
 		if eventsCol, err := app.FindCollectionByNameOrId("events"); err == nil && eventsCol != nil {
 			for _, fieldName := range []string{"google_event_id", "color", "description"} {
 				if eventsCol.Fields.GetByName(fieldName) == nil {
@@ -261,6 +279,11 @@ func main() {
 					})
 				}
 			}
+			if eventsCol.Fields.GetByName("announcement") == nil {
+				eventsCol.Fields.Add(&core.BoolField{
+					Name: "announcement",
+				})
+			}
 			emptyRule := ""
 			eventsCol.ListRule = &emptyRule
 			eventsCol.ViewRule = &emptyRule
@@ -268,6 +291,14 @@ func main() {
 			eventsCol.UpdateRule = &emptyRule
 			eventsCol.DeleteRule = &emptyRule
 			_ = app.Save(eventsCol)
+		}
+
+		// Sanitize any existing events marked as both announcement and deadline (announcement takes precedence)
+		if conflictingEvts, err := app.FindRecordsByFilter("events", "announcement = true && deadline = true", "", 500, 0); err == nil {
+			for _, r := range conflictingEvts {
+				r.Set("deadline", false)
+				_ = app.Save(r)
+			}
 		}
 
 		se.Router.POST("/api/calendar/nickname", setNickname(app))

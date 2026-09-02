@@ -64,6 +64,6 @@ The system unifies time management across three distinct layers:
 - `calendar` (FK -> calendars)
 - `task` (FK -> tasks, optional)
 - `title`, `start`, `end` (text ISO)
-- `allday` (bool), `deadline` (bool)
+- `allday` (bool), `deadline` (bool), `announcement` (bool)
 - `recurr` (RRULE text), `exdate` (json), `timezone` (text)
 - `created`, `updated`

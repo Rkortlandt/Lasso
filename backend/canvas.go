@@ -635,6 +635,48 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 				}
 			}
 
+			plannableType, _ := plannerItem["plannable_type"].(string)
+			plannableType = strings.ToLower(strings.TrimSpace(plannableType))
+
+			if plannableType == "announcement" {
+				// Canvas announcement: Save to `events` collection as an announcement, NEVER as a task or deadline
+				existingTaskRecord, _ := app.FindFirstRecordByFilter(
+					"tasks",
+					"user = {:user} && name = {:name}",
+					map[string]any{"user": authRecord.Id, "name": taskTitle},
+				)
+				if existingTaskRecord != nil {
+					_ = app.Delete(existingTaskRecord)
+				}
+
+				eventsCollection, errEvt := app.FindCollectionByNameOrId("events")
+				if errEvt == nil && eventsCollection != nil {
+					existingAnn, _ := app.FindFirstRecordByFilter(
+						"events",
+						"calendar = {:cal} && title = {:title} && (announcement = true || deadline = true)",
+						map[string]any{"cal": calendarID, "title": taskTitle},
+					)
+					targetAnn := existingAnn
+					if targetAnn == nil {
+						targetAnn = core.NewRecord(eventsCollection)
+						targetAnn.Set("calendar", calendarID)
+					}
+					targetAnn.Set("title", taskTitle)
+					targetAnn.Set("start", dueAtTimestamp)
+					targetAnn.Set("end", dueAtTimestamp)
+					targetAnn.Set("allday", false)
+					targetAnn.Set("announcement", true)
+					targetAnn.Set("deadline", false) // BE CAREFUL: Never mark as both announcement and deadline!
+					if desc, ok := plannableData["message"].(string); ok && desc != "" {
+						targetAnn.Set("description", desc)
+					}
+					if err := app.Save(targetAnn); err != nil {
+						log.Printf("Failed to save announcement event %s: %v", taskTitle, err)
+					}
+				}
+				continue
+			}
+
 			taskStatus := "todo"
 			gradeStr := ""
 			if submissionsData, ok := plannerItem["submissions"].(map[string]any); ok && submissionsData != nil {

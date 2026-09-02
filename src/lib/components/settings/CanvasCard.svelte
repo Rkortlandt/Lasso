@@ -29,9 +29,11 @@
 	async function loadPocketBaseCalendars() {
 		if (!pb.authStore.isValid) return;
 		try {
-			pbCalendars = await pb.collection("calendars").getFullList<CalendarRecord>({
-				requestKey: null,
-			});
+			pbCalendars = await pb
+				.collection("calendars")
+				.getFullList<CalendarRecord>({
+					requestKey: null,
+				});
 		} catch (err) {
 			console.warn("Failed to load calendars in CanvasCard:", err);
 		}
@@ -43,7 +45,9 @@
 		}
 	});
 
-	function getCalendarForCourse(course: CanvasCourse): CalendarRecord | undefined {
+	function getCalendarForCourse(
+		course: CanvasCourse,
+	): CalendarRecord | undefined {
 		const name = (course.name || "").toLowerCase().trim();
 		const orig = (course.original_name || "").toLowerCase().trim();
 		const code = (course.course_code || "").toLowerCase().trim();
@@ -170,7 +174,9 @@
 		} catch (err) {}
 	}
 
-	let syncAlert = $state<{ type: "success" | "error"; message: string } | null>(null);
+	let syncAlert = $state<{ type: "success" | "error"; message: string } | null>(
+		null,
+	);
 
 	async function handleSyncCanvas() {
 		syncAlert = null;
@@ -178,7 +184,9 @@
 			const res = await canvasState.syncCanvas();
 			syncAlert = {
 				type: "success",
-				message: res.message || `Successfully synced ${res.coursesSynced} courses and ${res.tasksSynced} tasks.`
+				message:
+					res.message ||
+					`Successfully synced ${res.coursesSynced} courses and ${res.tasksSynced} tasks.`,
 			};
 			setTimeout(() => {
 				syncAlert = null;
@@ -186,7 +194,9 @@
 		} catch (err: any) {
 			syncAlert = {
 				type: "error",
-				message: err?.message || "Failed to sync Canvas. Please verify your Canvas access token and institution URL."
+				message:
+					err?.message ||
+					"Failed to sync Canvas. Please verify your Canvas access token and institution URL.",
 			};
 		}
 	}
@@ -208,13 +218,7 @@
 			</h2>
 		</div>
 
-		{#if canvasState.isConnected}
-			<span
-				class="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400 leading-none"
-			>
-				Connected
-			</span>
-		{:else}
+		{#if !canvasState.isConnected}
 			<span
 				class="inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground leading-none"
 			>
@@ -257,67 +261,42 @@
 						</div>
 					{/if}
 				</div>
-
-				<div class="flex items-center gap-2 shrink-0">
-					<Button
-						variant="outline"
-						size="sm"
-						class="h-8 gap-1.5 text-xs font-medium cursor-pointer shadow-xs"
-						onclick={handleSyncCanvas}
-						disabled={canvasState.isSyncing}
-						title="Synchronize courses, calendar entries, and tasks from Canvas"
-					>
-						<RefreshCwIcon
-							class="size-3.5 {canvasState.isSyncing ? 'animate-spin' : ''}"
-						/>
-						<span>{canvasState.isSyncing ? 'Syncing Canvas...' : 'Sync Canvas'}</span>
-					</Button>
-				</div>
 			</div>
 
 			{#if syncAlert}
 				<div
 					transition:slide={{ duration: 180 }}
-					class="p-3 rounded-lg text-xs flex items-start gap-2.5 {syncAlert.type === 'error'
+					class="p-3 rounded-lg text-xs flex items-start gap-2.5 {syncAlert.type ===
+					'error'
 						? 'bg-destructive/10 text-destructive border border-destructive/20'
 						: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'}"
 				>
-					{#if syncAlert.type === 'error'}
+					{#if syncAlert.type === "error"}
 						<AlertTriangleIcon class="size-4 shrink-0 mt-0.5" />
 					{:else}
 						<CheckIcon class="size-4 shrink-0 mt-0.5" />
 					{/if}
 					<div class="flex-1 min-w-0">
 						<p class="font-medium">{syncAlert.message}</p>
-						{#if syncAlert.type === 'error'}
-							<p class="text-[11px] opacity-80 mt-0.5">Please check your Canvas token and institution URL.</p>
+						{#if syncAlert.type === "error"}
+							<p class="text-[11px] opacity-80 mt-0.5">
+								Please check your Canvas token and institution URL.
+							</p>
 						{/if}
 					</div>
 				</div>
 			{/if}
 
 			{#if canvasState.validCourses.length > 0}
-				<div class="pt-2 space-y-3">
+				<div class="pt-2">
 					<!-- Filter Header -->
 					<div
 						class="flex flex-col sm:flex-row sm:items-center justify-between gap-2"
 					>
 						<div class="flex items-center gap-2">
-							<span class="text-xs font-medium text-foreground"
+							<span class="text-xs text-foreground uppercase font-bold"
 								>Course Sections</span
 							>
-							<Button
-								variant="ghost"
-								size="icon"
-								class="size-6 text-muted-foreground hover:text-foreground cursor-pointer"
-								onclick={handleSyncCanvas}
-								title="Sync with Canvas"
-								disabled={canvasState.isLoading || canvasState.isSyncing}
-							>
-								<RefreshCwIcon
-									class="size-3.5 {canvasState.isSyncing || canvasState.isLoading ? 'animate-spin' : ''}"
-								/>
-							</Button>
 						</div>
 
 						<!-- Group tabs -->
@@ -374,13 +353,9 @@
 							<div class="space-y-1.5">
 								{#if selectedSectionTab === "all"}
 									<div
-										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-emerald-400 uppercase"
+										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase"
 									>
-										<span class="size-1.5 rounded-full bg-emerald-400"></span>
-										<span
-											>Current Sections ({canvasState.currentCourses
-												.length})</span
-										>
+										<span>Current ({canvasState.currentCourses.length})</span>
 									</div>
 								{/if}
 								{#each canvasState.currentCourses as course, idx}
@@ -394,17 +369,21 @@
 							<div class="space-y-1.5">
 								{#if selectedSectionTab === "all"}
 									<div
-										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-amber-400 uppercase"
+										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase"
 									>
-										<span class="size-1.5 rounded-full bg-amber-400"></span>
 										<span
-											>Upcoming / Unpublished Sections ({canvasState
-												.upcomingCourses.length})</span
+											>Upcoming / Unpublished ({canvasState.upcomingCourses
+												.length})</span
 										>
 									</div>
 								{/if}
 								{#each canvasState.upcomingCourses as course, idx}
-									{@render courseItem(course, course.color || course.backgroundColor || getSwatch(idx + 5))}
+									{@render courseItem(
+										course,
+										course.color ||
+											course.backgroundColor ||
+											getSwatch(idx + 5),
+									)}
 								{/each}
 							</div>
 						{/if}
@@ -416,16 +395,16 @@
 									<div
 										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase"
 									>
-										<span class="size-1.5 rounded-full bg-muted-foreground"
-										></span>
-										<span
-											>Previous Sections ({canvasState.previousCourses
-												.length})</span
-										>
+										<span>Previous ({canvasState.previousCourses.length})</span>
 									</div>
 								{/if}
 								{#each canvasState.previousCourses as course, idx}
-									{@render courseItem(course, course.color || course.backgroundColor || getSwatch(idx + 2))}
+									{@render courseItem(
+										course,
+										course.color ||
+											course.backgroundColor ||
+											getSwatch(idx + 2),
+									)}
 								{/each}
 							</div>
 						{/if}
@@ -563,8 +542,8 @@
 						class="text-xs text-muted-foreground leading-relaxed"
 					>
 						Are you sure you want to disconnect Canvas LMS? This will remove all
-						synced academic courses, section schedules, and assignment dates from
-						your Lasso calendar.
+						synced academic courses, section schedules, and assignment dates
+						from your Lasso calendar.
 					</p>
 				</div>
 			</div>
@@ -604,14 +583,19 @@
 	{@const courseColor = course.color || course.backgroundColor || swatchColor}
 	{@const cal = getCalendarForCourse(course)}
 	{@const calId = cal ? cal.id : String(course.id)}
-	{@const isHiddenInSidebar = calendarVisibilityState.isHiddenInSidebar(calId, course.name)}
+	{@const isHiddenInSidebar = calendarVisibilityState.isHiddenInSidebar(
+		calId,
+		course.name,
+	)}
 	<div
 		class="rounded-lg border border-border bg-card/60 overflow-hidden transition-all duration-200 {isExpanded
 			? 'border-primary/50 shadow-xs ring-1 ring-primary/20'
 			: 'hover:border-border/80'}"
 	>
 		<!-- Clickable header card with right-aligned grey outlined visibility button -->
-		<div class="w-full p-2.5 flex items-center justify-between gap-2.5 select-none">
+		<div
+			class="w-full p-2.5 flex items-center justify-between gap-2.5 select-none"
+		>
 			<button
 				type="button"
 				class="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer text-left group"
@@ -619,10 +603,16 @@
 				aria-expanded={isExpanded}
 			>
 				<span
-					class="size-2.5 rounded-xs shrink-0 shadow-2xs transition-opacity {isHiddenInSidebar ? 'opacity-40' : ''}"
+					class="size-2.5 rounded-xs shrink-0 shadow-2xs transition-opacity {isHiddenInSidebar
+						? 'opacity-40'
+						: ''}"
 					style="background-color: {courseColor};"
 				></span>
-				<span class="font-medium truncate text-xs leading-none {isHiddenInSidebar ? 'text-muted-foreground line-through opacity-75' : 'text-foreground'}">
+				<span
+					class="font-medium truncate text-xs leading-none {isHiddenInSidebar
+						? 'text-muted-foreground line-through opacity-75'
+						: 'text-foreground'}"
+				>
 					{course.nickname || cal?.nickname || course.name}
 				</span>
 			</button>
@@ -632,13 +622,17 @@
 				<!-- Grey outlined visibility button with no text -->
 				<button
 					type="button"
-					class="size-7 rounded-md border border-border/70 text-muted-foreground hover:text-foreground hover:border-foreground/40 hover:bg-muted/40 flex items-center justify-center transition-colors cursor-pointer {isHiddenInSidebar ? 'opacity-50' : ''}"
+					class="size-7 rounded-md border border-border/70 text-muted-foreground hover:text-foreground hover:border-foreground/40 hover:bg-muted/40 flex items-center justify-center transition-colors cursor-pointer {isHiddenInSidebar
+						? 'opacity-50'
+						: ''}"
 					onclick={(e) => {
 						e.stopPropagation();
 						calendarVisibilityState.toggleSidebarVisibility(calId, course.name);
 					}}
-					title={isHiddenInSidebar ? 'Hidden in sidebar (click to show)' : 'Visible in sidebar (click to hide)'}
-					aria-label={isHiddenInSidebar ? 'Show in sidebar' : 'Hide in sidebar'}
+					title={isHiddenInSidebar
+						? "Hidden in sidebar (click to show)"
+						: "Visible in sidebar (click to hide)"}
+					aria-label={isHiddenInSidebar ? "Show in sidebar" : "Hide in sidebar"}
 				>
 					{#if isHiddenInSidebar}
 						<EyeOffIcon class="size-3.5" />

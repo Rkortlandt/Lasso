@@ -2,6 +2,7 @@
 	import ChevronLeft from "@lucide/svelte/icons/chevron-left";
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
 	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
+	import MegaphoneIcon from "@lucide/svelte/icons/megaphone";
 	import X from "@lucide/svelte/icons/x";
 	import Button from "$lib/components/ui/button/button.svelte";
 	import { dayState } from "$lib/dayState.svelte";
@@ -12,6 +13,16 @@
 	import { googleCalendarState } from "$lib/googleCalendarState.svelte";
 	import { themeState } from "$lib/themeState.svelte";
 	import { dragState } from "$lib/dragState.svelte";
+	import { syncState } from "$lib/syncState.svelte";
+	import {
+		type EventRecord,
+		type CalendarRecord,
+		type TaskRecord,
+		getCalendarRecords,
+		getTaskRecords,
+		getEventRecords,
+		addEventRecord,
+	} from "$lib/pocketbaseActions";
 	import {
 		isToday,
 		getLocalTimeZone,
@@ -25,53 +36,15 @@
 		return Math.round((utcTo - utcFrom) / 86400000);
 	}
 
-	interface CalendarRecord {
-		id: string;
-		name: string;
-		color?: string;
-		source?: string;
-		nickname?: string;
-		course_id?: string;
-		calendar_id?: string;
-	}
-
-	interface TaskRecord {
-		id: string;
-		user?: string;
-		calendar?: string | string[];
-		name: string;
-		status?: string;
-		priority?: string;
-		due_date?: string;
-		fake_due_date?: string;
-		expand?: {
-			calendar?: CalendarRecord;
-		};
-	}
-
-	interface EventRecord {
-		id: string;
-		calendar?: string;
-		task?: string;
-		title: string;
-		start: string;
-		end?: string;
-		allday?: boolean;
-		deadline?: boolean;
-		color?: string;
-		description?: string;
-		google_event_id?: string;
-		expand?: {
-			calendar?: CalendarRecord;
-			task?: TaskRecord;
-		};
-	}
-
 	let pbTasks = $state<TaskRecord[]>([]);
 	let pbCalendars = $state<CalendarRecord[]>([]);
 	let pbEvents = $state<EventRecord[]>([]);
-
 	let now = $state(new Date());
+	let dragHoverState = $state<DragHoverState | null>(null);
+	let baseDate = $state<DateValue>(dayState.value);
+	let prevDate = $state<DateValue>(dayState.value);
+	let offsetDays = $state(0);
+	let isAnimating = $state(false);
 
 	$effect(() => {
 		const timer = setInterval(() => {
@@ -104,35 +77,15 @@
 		if (!pb.authStore.isValid) return;
 		try {
 			const [cals, tks, evts] = await Promise.all([
-				pb
-					.collection("calendars")
-					.getFullList<CalendarRecord>({
-						sort: "name",
-						requestKey: null,
-					})
-					.catch(() => []),
-				pb
-					.collection("tasks")
-					.getFullList<TaskRecord>({
-						sort: "due_date",
-						expand: "calendar",
-						requestKey: null,
-					})
-					.catch(() => []),
-				pb
-					.collection("events")
-					.getFullList<EventRecord>({
-						filter: "deadline != true",
-						expand: "calendar,task",
-						requestKey: null,
-					})
-					.catch(() => []),
+				getCalendarRecords(),
+				getTaskRecords(),
+				getEventRecords(),
 			]);
 			pbCalendars = cals;
 			pbTasks = tks;
 			pbEvents = evts;
 		} catch (err) {
-			console.warn("HeroPage failed to load calendar data:", err);
+			console.warn("Failed to load calendar data:", err);
 		}
 	}
 
@@ -165,7 +118,6 @@
 				debouncedLoadCalendarData();
 			})
 			.catch(() => () => {});
-
 		const unsubCals = pb
 			.collection("calendars")
 			.subscribe("*", () => {
@@ -173,7 +125,6 @@
 				googleCalendarState.loadFromPocketBase();
 			})
 			.catch(() => () => {});
-
 		const unsubEvts = pb
 			.collection("events")
 			.subscribe("*", () => {
@@ -181,12 +132,11 @@
 				googleCalendarState.loadFromPocketBase();
 			})
 			.catch(() => () => {});
-
 		return () => {
 			if (reloadDebounceTimer) clearTimeout(reloadDebounceTimer);
-			unsubTasks.then((u) => u && u());
-			unsubCals.then((u) => u && u());
-			unsubEvts.then((u) => u && u());
+			unsubTasks.then((unsub) => unsub && unsub());
+			unsubCals.then((unsub) => unsub && unsub());
+			unsubEvts.then((unsub) => unsub && unsub());
 		};
 	});
 
@@ -207,48 +157,13 @@
 		}
 	});
 
-	let isManualSyncing = $state(false);
-	const isGlobalSyncing = $derived(
-		isManualSyncing ||
-			canvasState.isSyncing ||
-			googleCalendarState.isSyncingToGoogle,
-	);
-
 	async function handleGlobalSync() {
-		if (isGlobalSyncing) return;
-		isManualSyncing = true;
+		if (syncState.isAnySyncing) return;
 		try {
-			// 1. Pull from Canvas if connected
-			if (canvasState.isConnected) {
-				await canvasState
-					.syncCanvas()
-					.catch((e) => console.warn("Canvas sync error:", e));
-			}
-
-			// 2. If Google is connected:
-			if (googleCalendarState.isConnected) {
-				// Refresh calendar list
-				await googleCalendarState
-					.refresh()
-					.catch((e) => console.warn("Google refresh error:", e));
-
-				// Pull events from all personal Google calendars so they are loaded in memory
-				if (allGoogleCalendarIds.length > 0) {
-					await googleCalendarState
-						.fetchReadOnlyEvents(allGoogleCalendarIds)
-						.catch((e) => console.warn("Google read events error:", e));
-				}
-
-				// Push/sync coursework to dedicated "Lasso" Google Calendar
-				await googleCalendarState
-					.syncToGoogle()
-					.catch((e) => console.warn("Google push error:", e));
-			}
-
-			// 3. Reload local calendar data in HeroPage
+			await syncState.syncAll();
 			await loadCalendarData();
-		} finally {
-			isManualSyncing = false;
+		} catch (e) {
+			console.warn("Global sync error:", e);
 		}
 	}
 
@@ -285,13 +200,28 @@
 
 	interface FormattedDeadline {
 		id: string;
-		task: TaskRecord;
+		task?: TaskRecord;
+		event?: EventRecord;
 		name: string;
 		dueTimeStr: string;
 		status: string;
 		priority?: string;
 		color: string;
 		courseName: string;
+		isEndOfDay: boolean;
+		topPercent: number;
+		leftPercent: number;
+		widthPercent: number;
+	}
+
+	interface FormattedAnnouncement {
+		id: string;
+		event: EventRecord;
+		title: string;
+		timeStr: string;
+		color: string;
+		courseName: string;
+		description?: string;
 		isEndOfDay: boolean;
 		topPercent: number;
 		leftPercent: number;
@@ -305,12 +235,18 @@
 		if (!dateStr) return null;
 		const trimmed = dateStr.trim();
 		// If explicitly all-day OR date-only YYYY-MM-DD OR midnight representation: extract calendar date directly
-		if (isAllDay || /^\d{4}-\d{2}-\d{2}$/.test(trimmed) || (isAllDay && /^\d{4}-\d{2}-\d{2}[ T]00:00:00/.test(trimmed))) {
+		if (
+			isAllDay ||
+			/^\d{4}-\d{2}-\d{2}$/.test(trimmed) ||
+			(isAllDay && /^\d{4}-\d{2}-\d{2}[ T]00:00:00/.test(trimmed))
+		) {
 			const datePart = trimmed.slice(0, 10);
 			const [y, m, d] = datePart.split("-").map(Number);
 			return { year: y, month: m, day: d };
 		}
-		const normalized = trimmed.includes(" ") ? trimmed.replace(" ", "T") : trimmed;
+		const normalized = trimmed.includes(" ")
+			? trimmed.replace(" ", "T")
+			: trimmed;
 		const d = new Date(normalized);
 		if (isNaN(d.getTime())) return null;
 		return {
@@ -320,10 +256,26 @@
 		};
 	}
 
-	function getDayDeadlines(date: DateValue): FormattedDeadline[] {
-		const dayTasks = allTasks.filter((t) => {
+	// Pre-index announcement titles for O(1) membership check
+	const announcementTitlesSet = $derived.by(() => {
+		const set = new Set<string>();
+		for (const e of pbEvents) {
+			if (e.announcement && e.title) {
+				set.add(e.title.toLowerCase().trim());
+			}
+		}
+		return set;
+	});
+
+	// Pre-index deadlines by date key ("YYYY-M-D") - calculated ONCE when data changes, not on 39 columns per frame
+	const deadlinesByDate = $derived.by(() => {
+		const map = new Map<string, FormattedDeadline[]>();
+
+		const tasksGrouped = new Map<string, TaskRecord[]>();
+		for (const t of allTasks) {
 			const rawDue = t.due_date || t.fake_due_date;
-			if (!rawDue) return false;
+			if (!rawDue) continue;
+			if (announcementTitlesSet.has(t.name.toLowerCase().trim())) continue;
 
 			let calId = "";
 			if (t.expand?.calendar?.id) {
@@ -337,147 +289,393 @@
 			const effectiveCalId = calId || "unassigned";
 			const cal = calId ? calendarMap.get(calId) : null;
 			const calName = cal?.name || t.expand?.calendar?.name || "Other Tasks";
-			if (calendarVisibilityState.isHiddenFromGrid(effectiveCalId, cal?.calendar_id || calName)) {
-				return false;
+			if (
+				calendarVisibilityState.isHiddenFromGrid(
+					effectiveCalId,
+					cal?.calendar_id || calName,
+				)
+			) {
+				continue;
 			}
 
 			const taskDate = getTaskLocalDate(rawDue);
-			if (!taskDate) return false;
-			return (
-				taskDate.year === date.year &&
-				taskDate.month === date.month &&
-				taskDate.day === date.day
-			);
-		});
-
-		if (dayTasks.length === 0) return [];
-
-		// Deduplicate identical assignments by name for this day
-		const seenNames = new Set<string>();
-		const uniqueTasks = dayTasks.filter((t) => {
-			const key = t.name.toLowerCase().trim();
-			if (seenNames.has(key)) return false;
-			seenNames.add(key);
-			return true;
-		});
-
-		const parsed: FormattedDeadline[] = uniqueTasks.map((t) => {
-			const rawDue = (t.due_date || t.fake_due_date)!;
-			const d = new Date(rawDue);
-			const hours = d.getHours();
-			const minutes = d.getMinutes();
-			const totalMinutes = hours * 60 + minutes;
-
-			// End-of-day: if it is explicitly at or past 11:45 PM
-			const isEndOfDay = hours === 23 && minutes >= 45;
-
-			// Map to grid percentage across the 25 hours (Row 0 = prev 11 PM, Row 1 = 12 AM to Row 24 = 11 PM to 12 AM)
-			const topPercent = isEndOfDay
-				? 98.5
-				: Math.min(98.5, Math.max(4.0, ((1 + totalMinutes / 60) / 25) * 100));
-
-			let calId = "";
-			if (t.expand?.calendar?.id) {
-				calId = t.expand.calendar.id;
-			} else if (Array.isArray(t.calendar)) {
-				calId = t.calendar[0];
-			} else if (typeof t.calendar === "string") {
-				calId = t.calendar;
+			if (!taskDate) continue;
+			const key = `${taskDate.year}-${taskDate.month}-${taskDate.day}`;
+			let list = tasksGrouped.get(key);
+			if (!list) {
+				list = [];
+				tasksGrouped.set(key, list);
 			}
-
-			const cal = calId ? calendarMap.get(calId) : undefined;
-			let color = cal?.color || t.expand?.calendar?.color;
-			let courseName =
-				cal?.nickname ||
-				cal?.name ||
-				t.expand?.calendar?.nickname ||
-				t.expand?.calendar?.name;
-
-			const courseMatch = canvasState.courses.find(
-				(c) =>
-					(cal?.course_id && String(c.id) === String(cal.course_id)) ||
-					String(c.id) === calId ||
-					c.name === courseName ||
-					(c.original_name && c.original_name === courseName),
-			);
-			if (courseMatch) {
-				if (courseMatch.color || courseMatch.backgroundColor) {
-					color = courseMatch.color || courseMatch.backgroundColor;
-				}
-				if (!courseName) courseName = courseMatch.name;
-			}
-
-			if (!color) color = "#3b82f6";
-			if (!courseName) courseName = "Assignment";
-
-			const dueTimeStr = d.toLocaleTimeString([], {
-				hour: "numeric",
-				minute: "2-digit",
-			});
-
-			return {
-				id: t.id,
-				task: t,
-				name: t.name,
-				dueTimeStr,
-				status: t.status || "todo",
-				priority: t.priority,
-				color,
-				courseName,
-				isEndOfDay,
-				topPercent,
-				leftPercent: 0,
-				widthPercent: 100,
-			};
-		});
-
-		const endOfDayItems = parsed.filter((p) => p.isEndOfDay);
-		const daytimeItems = parsed.filter((p) => !p.isEndOfDay);
-
-		// Distribute horizontal space for overlapping end-of-day items
-		if (endOfDayItems.length > 0) {
-			const n = endOfDayItems.length;
-			const width = 100 / n;
-			endOfDayItems.forEach((item, idx) => {
-				item.widthPercent = width;
-				item.leftPercent = idx * width;
-			});
+			list.push(t);
 		}
 
-		// Distribute horizontal space for overlapping daytime items
-		daytimeItems.sort((a, b) => a.topPercent - b.topPercent);
+		const eventsGrouped = new Map<string, EventRecord[]>();
+		for (const e of pbEvents) {
+			if (!e.deadline || e.announcement || !e.start) continue;
 
-		const daytimeClusters: FormattedDeadline[][] = [];
-		let currentCluster: FormattedDeadline[] = [];
+			let calId = e.calendar || e.expand?.calendar?.id || "";
+			const cal = calId ? calendarMap.get(calId) : null;
+			const calName = cal?.name || e.expand?.calendar?.name || "Other Tasks";
+			if (
+				calendarVisibilityState.isHiddenFromGrid(
+					calId || "unassigned",
+					cal?.calendar_id || calName,
+				)
+			) {
+				continue;
+			}
 
-		for (const item of daytimeItems) {
-			if (currentCluster.length === 0) {
-				currentCluster.push(item);
-			} else {
-				const prev = currentCluster[currentCluster.length - 1];
-				// Overlap if within 15 mins (1.0% of day)
-				if (Math.abs(item.topPercent - prev.topPercent) <= 1.2) {
+			const evtDate = getTaskLocalDate(e.start, false);
+			if (!evtDate) continue;
+			const key = `${evtDate.year}-${evtDate.month}-${evtDate.day}`;
+			let list = eventsGrouped.get(key);
+			if (!list) {
+				list = [];
+				eventsGrouped.set(key, list);
+			}
+			list.push(e);
+		}
+
+		const allKeys = new Set([...tasksGrouped.keys(), ...eventsGrouped.keys()]);
+
+		for (const key of allKeys) {
+			const dayTasks = tasksGrouped.get(key) || [];
+			const dayDeadlineEvents = eventsGrouped.get(key) || [];
+
+			const seenNames = new Set<string>();
+			const uniqueTasks = dayTasks.filter((t) => {
+				const nameKey = t.name.toLowerCase().trim();
+				if (seenNames.has(nameKey)) return false;
+				seenNames.add(nameKey);
+				return true;
+			});
+
+			const parsedTasks: FormattedDeadline[] = uniqueTasks.map((t) => {
+				const rawDue = (t.due_date || t.fake_due_date)!;
+				const d = new Date(rawDue);
+				const hours = d.getHours();
+				const minutes = d.getMinutes();
+				const totalMinutes = hours * 60 + minutes;
+
+				const isEndOfDay = hours === 23 && minutes >= 45;
+				const topPercent = isEndOfDay
+					? 98.5
+					: Math.min(98.5, Math.max(4.0, ((1 + totalMinutes / 60) / 25) * 100));
+
+				let calId = "";
+				if (t.expand?.calendar?.id) {
+					calId = t.expand.calendar.id;
+				} else if (Array.isArray(t.calendar)) {
+					calId = t.calendar[0];
+				} else if (typeof t.calendar === "string") {
+					calId = t.calendar;
+				}
+
+				const cal = calId ? calendarMap.get(calId) : undefined;
+				let color = cal?.color || t.expand?.calendar?.color;
+				let courseName =
+					cal?.nickname ||
+					cal?.name ||
+					t.expand?.calendar?.nickname ||
+					t.expand?.calendar?.name;
+
+				const courseMatch = canvasState.courses.find(
+					(c) =>
+						(cal?.course_id && String(c.id) === String(cal.course_id)) ||
+						String(c.id) === calId ||
+						c.name === courseName ||
+						(c.original_name && c.original_name === courseName),
+				);
+				if (courseMatch) {
+					if (courseMatch.color || courseMatch.backgroundColor) {
+						color = courseMatch.color || courseMatch.backgroundColor;
+					}
+					if (!courseName) courseName = courseMatch.name;
+				}
+
+				if (!color) color = "#3b82f6";
+				if (!courseName) courseName = "Assignment";
+
+				const dueTimeStr = d.toLocaleTimeString([], {
+					hour: "numeric",
+					minute: "2-digit",
+				});
+
+				return {
+					id: t.id,
+					task: t,
+					name: t.name,
+					dueTimeStr,
+					status: t.status || "todo",
+					priority: t.priority,
+					color,
+					courseName,
+					isEndOfDay,
+					topPercent,
+					leftPercent: 0,
+					widthPercent: 100,
+				};
+			});
+
+			const parsedEvents: FormattedDeadline[] = dayDeadlineEvents
+				.filter((e) => {
+					const nameKey = e.title.toLowerCase().trim();
+					if (seenNames.has(nameKey)) return false;
+					seenNames.add(nameKey);
+					return true;
+				})
+				.map((e) => {
+					const rawDue = ISOIsolateStart(e);
+					const d = new Date(rawDue);
+					const hours = d.getHours();
+					const minutes = d.getMinutes();
+					const totalMinutes = hours * 60 + minutes;
+					const isEndOfDay = hours === 23 && minutes >= 45;
+					const topPercent = isEndOfDay
+						? 98.5
+						: Math.min(
+								98.5,
+								Math.max(4.0, ((1 + totalMinutes / 60) / 25) * 100),
+							);
+
+					let calId = e.calendar || e.expand?.calendar?.id || "";
+					const cal = calId ? calendarMap.get(calId) : undefined;
+					let color = e.color || cal?.color || e.expand?.calendar?.color;
+					let courseName =
+						cal?.nickname ||
+						cal?.name ||
+						e.expand?.calendar?.nickname ||
+						e.expand?.calendar?.name;
+
+					const dueTimeStr = d.toLocaleTimeString([], {
+						hour: "numeric",
+						minute: "2-digit",
+					});
+
+					return {
+						id: e.id,
+						event: e,
+						name: e.title,
+						dueTimeStr,
+						status: "todo",
+						priority: undefined,
+						color,
+						courseName,
+						isEndOfDay,
+						topPercent,
+						leftPercent: 0,
+						widthPercent: 100,
+					};
+				});
+
+			const parsed: FormattedDeadline[] = [...parsedTasks, ...parsedEvents];
+
+			const endOfDayItems = parsed.filter((p) => p.isEndOfDay);
+			const daytimeItems = parsed.filter((p) => !p.isEndOfDay);
+			// REFACTOR
+			if (endOfDayItems.length > 0) {
+				const n = endOfDayItems.length;
+				const width = 100 / n;
+				endOfDayItems.forEach((item, idx) => {
+					item.widthPercent = width;
+					item.leftPercent = idx * width;
+				});
+			}
+
+			daytimeItems.sort((a, b) => a.topPercent - b.topPercent);
+
+			const daytimeClusters: FormattedDeadline[][] = [];
+			let currentCluster: FormattedDeadline[] = [];
+
+			for (const item of daytimeItems) {
+				if (currentCluster.length === 0) {
 					currentCluster.push(item);
 				} else {
-					daytimeClusters.push(currentCluster);
-					currentCluster = [item];
+					const prev = currentCluster[currentCluster.length - 1];
+					if (Math.abs(item.topPercent - prev.topPercent) <= 1.2) {
+						currentCluster.push(item);
+					} else {
+						daytimeClusters.push(currentCluster);
+						currentCluster = [item];
+					}
 				}
 			}
-		}
-		if (currentCluster.length > 0) {
-			daytimeClusters.push(currentCluster);
+			if (currentCluster.length > 0) {
+				daytimeClusters.push(currentCluster);
+			}
+
+			for (const cluster of daytimeClusters) {
+				const n = cluster.length;
+				const width = 100 / n;
+				cluster.forEach((item, idx) => {
+					item.widthPercent = width;
+					item.leftPercent = idx * width;
+				});
+			}
+
+			map.set(key, [...daytimeItems, ...endOfDayItems]);
 		}
 
-		for (const cluster of daytimeClusters) {
-			const n = cluster.length;
-			const width = 100 / n;
-			cluster.forEach((item, idx) => {
-				item.widthPercent = width;
-				item.leftPercent = idx * width;
+		return map;
+	});
+
+	function getDayDeadlines(date: DateValue): FormattedDeadline[] {
+		const key = `${date.year}-${date.month}-${date.day}`;
+		return deadlinesByDate.get(key) || [];
+	}
+	const ISOIsolateStart = (e: EventRecord) =>
+		e.start.includes(" ") ? e.start.replace(" ", "T") : e.start;
+	const ISOIsolateEnd = (e: EventRecord) =>
+		e.end ? (e.end.includes(" ") ? e.end.replace(" ", "T") : e.end) : "";
+	// Pre-index announcements by date key ("YYYY-M-D") - calculated ONCE when data changes, not on 39 columns per frame
+	const announcementsByDate = $derived.by(() => {
+		const map = new Map<string, FormattedAnnouncement[]>();
+
+		const announcementsGrouped = new Map<string, EventRecord[]>();
+		for (const e of pbEvents) {
+			if (!e.announcement || !e.start) continue;
+
+			let calId = e.calendar || e.expand?.calendar?.id || "";
+			const cal = calId ? calendarMap.get(calId) : null;
+			const calName = cal?.name || e.expand?.calendar?.name || "Coursework";
+			if (
+				calendarVisibilityState.isHiddenFromGrid(
+					calId || "unassigned",
+					cal?.calendar_id || calName,
+				)
+			) {
+				continue;
+			}
+
+			const evtDate = getTaskLocalDate(e.start, false);
+			if (!evtDate) continue;
+			const key = `${evtDate.year}-${evtDate.month}-${evtDate.day}`;
+			let list = announcementsGrouped.get(key);
+			if (!list) {
+				list = [];
+				announcementsGrouped.set(key, list);
+			}
+			list.push(e);
+		}
+
+		for (const [key, dayAnnouncements] of announcementsGrouped.entries()) {
+			const seenTitles = new Set<string>();
+			const uniqueAnnouncements = dayAnnouncements.filter((e) => {
+				const titleKey = e.title.toLowerCase().trim();
+				if (seenTitles.has(titleKey)) return false;
+				seenTitles.add(titleKey);
+				return true;
 			});
+			const parsed: FormattedAnnouncement[] = uniqueAnnouncements.map((e) => {
+				const rawStart = ISOIsolateStart(e);
+				const d = new Date(rawStart);
+				const hours = d.getHours();
+				const minutes = d.getMinutes();
+				const totalMinutes = hours * 60 + minutes;
+
+				const isEndOfDay = hours === 23 && minutes >= 45;
+				const topPercent = isEndOfDay
+					? 98.5
+					: Math.min(98.5, Math.max(4.0, ((1 + totalMinutes / 60) / 25) * 100));
+
+				let calId = e.calendar || e.expand?.calendar?.id || "";
+				const cal = calId ? calendarMap.get(calId) : undefined;
+				let color = e.color || cal?.color || e.expand?.calendar?.color;
+				let courseName =
+					cal?.nickname ||
+					cal?.name ||
+					e.expand?.calendar?.nickname ||
+					e.expand?.calendar?.name;
+
+				const courseMatch = canvasState.courses.find(
+					(c) =>
+						(cal?.course_id && String(c.id) === String(cal.course_id)) ||
+						String(c.id) === calId ||
+						c.name === courseName ||
+						(c.original_name && c.original_name === courseName),
+				);
+				if (courseMatch) {
+					if (courseMatch.color || courseMatch.backgroundColor) {
+						color = courseMatch.color || courseMatch.backgroundColor;
+					}
+					if (!courseName) courseName = courseMatch.name;
+				}
+
+				if (!color) color = "#3b82f6";
+				if (!courseName) courseName = "Announcement";
+
+				const timeStr = d.toLocaleTimeString([], {
+					hour: "numeric",
+					minute: "2-digit",
+				});
+
+				return {
+					id: e.id,
+					event: e,
+					title: e.title,
+					timeStr,
+					color,
+					courseName,
+					description: e.description,
+					isEndOfDay,
+					topPercent,
+					leftPercent: 0,
+					widthPercent: 100,
+				};
+			});
+			//Refactor
+			const endOfDayItems = parsed.filter((p) => p.isEndOfDay);
+			const daytimeItems = parsed.filter((p) => !p.isEndOfDay);
+
+			if (endOfDayItems.length > 0) {
+				const n = endOfDayItems.length;
+				const width = 100 / n;
+				endOfDayItems.forEach((item, idx) => {
+					item.widthPercent = width;
+					item.leftPercent = idx * width;
+				});
+			}
+
+			daytimeItems.sort((a, b) => a.topPercent - b.topPercent);
+
+			const daytimeClusters: FormattedAnnouncement[][] = [];
+			let currentCluster: FormattedAnnouncement[] = [];
+
+			for (const item of daytimeItems) {
+				if (currentCluster.length === 0) {
+					currentCluster.push(item);
+				} else {
+					const prev = currentCluster[currentCluster.length - 1];
+					if (Math.abs(item.topPercent - prev.topPercent) <= 1.2) {
+						currentCluster.push(item);
+					} else {
+						daytimeClusters.push(currentCluster);
+						currentCluster = [item];
+					}
+				}
+			}
+			if (currentCluster.length > 0) {
+				daytimeClusters.push(currentCluster);
+			}
+
+			for (const cluster of daytimeClusters) {
+				const n = cluster.length;
+				const width = 100 / n;
+				cluster.forEach((item, idx) => {
+					item.widthPercent = width;
+					item.leftPercent = idx * width;
+				});
+			}
+
+			map.set(key, [...daytimeItems, ...endOfDayItems]);
 		}
 
-		return [...daytimeItems, ...endOfDayItems];
+		return map;
+	});
+
+	function getDayAnnouncements(date: DateValue): FormattedAnnouncement[] {
+		const key = `${date.year}-${date.month}-${date.day}`;
+		return announcementsByDate.get(key) || [];
 	}
 
 	interface DayAllDayEvent {
@@ -486,18 +684,22 @@
 		color?: string;
 	}
 
-	function getAllDayEventsForDate(date: DateValue): DayAllDayEvent[] {
-		const list: DayAllDayEvent[] = [];
-		const seenKeys = new Set<string>();
+	const allDayEventsByDate = $derived.by(() => {
+		const map = new Map<string, DayAllDayEvent[]>();
 
 		// 1. Process pbEvents
 		for (const e of pbEvents) {
-			if (!e.start || !e.allday) continue;
+			if (!e.start || !e.allday || e.deadline || e.announcement) continue;
 			let calColor: string | undefined;
 			if (e.calendar) {
 				const cal = calendarMap.get(e.calendar);
 				calColor = cal?.color || e.expand?.calendar?.color;
-				if (calendarVisibilityState.isHiddenFromGrid(e.calendar, cal?.calendar_id || cal?.name)) {
+				if (
+					calendarVisibilityState.isHiddenFromGrid(
+						e.calendar,
+						cal?.calendar_id || cal?.name,
+					)
+				) {
 					continue;
 				}
 				if (cal?.source === "canvas" || cal?.course_id) {
@@ -508,59 +710,71 @@
 							c.name === cal?.name ||
 							(c.original_name && c.original_name === cal?.name),
 					);
-					if (courseMatch && (courseMatch.color || courseMatch.backgroundColor)) {
+					if (
+						courseMatch &&
+						(courseMatch.color || courseMatch.backgroundColor)
+					) {
 						calColor = courseMatch.color || courseMatch.backgroundColor;
 					}
 				}
 			}
 			const evtDate = getTaskLocalDate(e.start, true);
 			if (!evtDate) continue;
-			if (
-				evtDate.year === date.year &&
-				evtDate.month === date.month &&
-				evtDate.day === date.day
-			) {
-				const dedupeKey = `${e.title}_${evtDate.year}_${evtDate.month}_${evtDate.day}`;
-				if (!seenKeys.has(dedupeKey)) {
-					seenKeys.add(dedupeKey);
+			const key = `${evtDate.year}-${evtDate.month}-${evtDate.day}`;
+			let list = map.get(key);
+			if (!list) {
+				list = [];
+				map.set(key, list);
+			}
+			const dedupeKey = `pb_${e.id}`;
+			if (!list.some((item) => item.id === dedupeKey)) {
+				list.push({
+					id: dedupeKey,
+					title: e.title,
+					color: calColor || "#3b82f6",
+				});
+			}
+		}
+
+		// 2. Process googleCalendarState.readOnlyEvents
+		if (googleCalendarState.isConnected) {
+			for (const ge of googleCalendarState.readOnlyEvents) {
+				if (!ge.allday || !ge.start) continue;
+				if (
+					calendarVisibilityState.isHiddenFromGrid(
+						ge.calendarId,
+						(ge as any).pbCalendarId,
+					)
+				)
+					continue;
+				const evtDate = getTaskLocalDate(ge.start, true);
+				if (!evtDate) continue;
+				const key = `${evtDate.year}-${evtDate.month}-${evtDate.day}`;
+				let list = map.get(key);
+				if (!list) {
+					list = [];
+					map.set(key, list);
+				}
+				const dedupeKey = `gcal_${ge.id}`;
+				if (!list.some((item) => item.id === dedupeKey)) {
+					const gCal = googleCalendarState.calendars.find(
+						(c) => c.id === ge.calendarId,
+					);
 					list.push({
-						id: `pb_${e.id}`,
-						title: e.title,
-						color: calColor || "#3b82f6",
+						id: dedupeKey,
+						title: ge.title,
+						color: ge.color || gCal?.backgroundColor || "#3b82f6",
 					});
 				}
 			}
 		}
 
-		// 2. Process googleCalendarState.readOnlyEvents without duplicating pbEvents
-		if (googleCalendarState.isConnected) {
-			for (const ge of googleCalendarState.readOnlyEvents) {
-				if (!ge.allday || !ge.start) continue;
-				if (calendarVisibilityState.isHiddenFromGrid(ge.calendarId, (ge as any).pbCalendarId)) continue;
-				const evtDate = getTaskLocalDate(ge.start, true);
-				if (!evtDate) continue;
-				if (
-					evtDate.year === date.year &&
-					evtDate.month === date.month &&
-					evtDate.day === date.day
-				) {
-					const dedupeKey = `${ge.title}_${evtDate.year}_${evtDate.month}_${evtDate.day}`;
-					if (!seenKeys.has(dedupeKey)) {
-						seenKeys.add(dedupeKey);
-						const gCal = googleCalendarState.calendars.find(
-							(c) => c.id === ge.calendarId,
-						);
-						list.push({
-							id: `gcal_${ge.id}`,
-							title: ge.title,
-							color: ge.color || gCal?.backgroundColor || "#3b82f6",
-						});
-					}
-				}
-			}
-		}
+		return map;
+	});
 
-		return list;
+	function getAllDayEventsForDate(date: DateValue): DayAllDayEvent[] {
+		const key = `${date.year}-${date.month}-${date.day}`;
+		return allDayEventsByDate.get(key) || [];
 	}
 
 	interface FormattedTimedEvent {
@@ -572,6 +786,7 @@
 		color: string;
 		topPercent: number;
 		heightPercent: number;
+		colIndex: number;
 		leftPercent: number;
 		widthPercent: number;
 		description?: string;
@@ -581,105 +796,47 @@
 		rawEvent?: EventRecord;
 	}
 
-	function getDayTimedEvents(date: DateValue): FormattedTimedEvent[] {
-		const seenKeys = new Set<string>();
-		interface RawTimedItem extends FormattedTimedEvent {
-			startMin: number;
-			endMin: number;
-			colIndex: number;
-		}
+	const timedEventsByDate = $derived.by(() => {
+		const map = new Map<string, FormattedTimedEvent[]>();
 
-		const items: RawTimedItem[] = [];
+		const dateItemsMap = new Map<
+			string,
+			{
+				geItems: (typeof googleCalendarState.readOnlyEvents)[number][];
+				peItems: EventRecord[];
+			}
+		>();
 
 		// 1. Google personal calendar timed events
 		if (
 			googleCalendarState.isConnected &&
 			googleCalendarState.readOnlyEvents.length > 0
 		) {
-			const filtered = googleCalendarState.readOnlyEvents.filter((ge) => {
-				if (ge.allday || !ge.start) return false;
+			for (const ge of googleCalendarState.readOnlyEvents) {
+				if (ge.allday || !ge.start) continue;
 				if (
 					calendarVisibilityState.isHiddenFromGrid(
 						ge.calendarId,
 						(ge as any).pbCalendarId,
 					)
-				)
-					return false;
+				) {
+					continue;
+				}
 				const evtDate = getTaskLocalDate(ge.start, false);
-				if (!evtDate) return false;
-				return (
-					evtDate.year === date.year &&
-					evtDate.month === date.month &&
-					evtDate.day === date.day
-				);
-			});
-
-			for (const ge of filtered) {
-				const dedupeKey = `gcal_${ge.id}_${ge.start}`;
-				if (seenKeys.has(dedupeKey)) continue;
-				seenKeys.add(dedupeKey);
-
-				const startIso = ge.start.includes(" ")
-					? ge.start.replace(" ", "T")
-					: ge.start;
-				const endIso = ge.end
-					? ge.end.includes(" ")
-						? ge.end.replace(" ", "T")
-						: ge.end
-					: "";
-				const startD = new Date(startIso);
-				const endD = endIso
-					? new Date(endIso)
-					: new Date(startD.getTime() + 60 * 60 * 1000);
-				const startMin = startD.getHours() * 60 + startD.getMinutes();
-				const durationMin = Math.max(
-					25,
-					(endD.getTime() - startD.getTime()) / 60000,
-				);
-				const endMin = startMin + durationMin;
-
-				const topPercent = Math.min(
-					95,
-					Math.max(4.0, ((1 + startMin / 60) / 25) * 100),
-				);
-				const heightPercent = Math.max(
-					2.0,
-					Math.min(25, (durationMin / 60 / 25) * 100),
-				);
-
-				const cal = googleCalendarState.calendars.find(
-					(c) => c.id === ge.calendarId,
-				);
-				const calName =
-					cal?.nickname || cal?.summary || "Google Calendar";
-				const color = ge.color || cal?.backgroundColor || "#3b82f6";
-
-				const timeStr = `${startD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} - ${endD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
-
-				items.push({
-					id: dedupeKey,
-					title: ge.title,
-					timeStr,
-					calendarName: calName,
-					color,
-					topPercent,
-					heightPercent,
-					startMin,
-					endMin,
-					colIndex: 0,
-					leftPercent: 0,
-					widthPercent: 100,
-					description: ge.description,
-					isTaskBlock: false,
-					source: "google",
-				});
+				if (!evtDate) continue;
+				const key = `${evtDate.year}-${evtDate.month}-${evtDate.day}`;
+				let entry = dateItemsMap.get(key);
+				if (!entry) {
+					entry = { geItems: [], peItems: [] };
+					dateItemsMap.set(key, entry);
+				}
+				entry.geItems.push(ge);
 			}
 		}
 
-		// 2. PocketBase timed events (Task work blocks and custom events)
+		// 2. PocketBase timed events
 		for (const pe of pbEvents) {
-			if (pe.allday || !pe.start || pe.deadline) continue;
-			// If it's a synced Google event and Google is connected, readOnlyEvents has it
+			if (pe.allday || !pe.start || pe.deadline || pe.announcement) continue;
 			if (pe.google_event_id && googleCalendarState.isConnected) continue;
 
 			let calId = pe.calendar || pe.expand?.calendar?.id || "";
@@ -703,164 +860,244 @@
 
 			const evtDate = getTaskLocalDate(pe.start, false);
 			if (!evtDate) continue;
-			if (
-				evtDate.year !== date.year ||
-				evtDate.month !== date.month ||
-				evtDate.day !== date.day
-			) {
-				continue;
+			const key = `${evtDate.year}-${evtDate.month}-${evtDate.day}`;
+			let entry = dateItemsMap.get(key);
+			if (!entry) {
+				entry = { geItems: [], peItems: [] };
+				dateItemsMap.set(key, entry);
 			}
+			entry.peItems.push(pe);
+		}
 
-			const dedupeKey = `pb_${pe.id}`;
-			if (seenKeys.has(dedupeKey)) continue;
-			seenKeys.add(dedupeKey);
+		// Format and cluster each date with timed items ONCE
+		for (const [key, { geItems, peItems }] of dateItemsMap.entries()) {
+			const seenKeys = new Set<string>();
+			interface RawTimedItem extends FormattedTimedEvent {
+				startMin: number;
+				endMin: number;
+				colIndex: number;
+			}
+			const items: RawTimedItem[] = [];
 
-			const startIso = pe.start.includes(" ")
-				? pe.start.replace(" ", "T")
-				: pe.start;
-			const endIso = pe.end
-				? pe.end.includes(" ")
-					? pe.end.replace(" ", "T")
-					: pe.end
-				: "";
-			const startD = new Date(startIso);
-			const endD = endIso
-				? new Date(endIso)
-				: new Date(startD.getTime() + 60 * 60 * 1000);
-			const startMin = startD.getHours() * 60 + startD.getMinutes();
-			const durationMin = Math.max(
-				25,
-				(endD.getTime() - startD.getTime()) / 60000,
-			);
-			const endMin = startMin + durationMin;
+			for (const ge of geItems) {
+				const dedupeKey = `gcal_${ge.id}_${ge.start}`;
+				if (seenKeys.has(dedupeKey)) continue;
+				seenKeys.add(dedupeKey);
 
-			const topPercent = Math.min(
-				95,
-				Math.max(4.0, ((1 + startMin / 60) / 25) * 100),
-			);
-			const heightPercent = Math.max(
-				2.0,
-				Math.min(25, (durationMin / 60 / 25) * 100),
-			);
-
-			let color = "";
-			// Work events and Canvas events inherit their calendar's main color
-			if (cal?.source === "canvas" || cal?.course_id || pe.task) {
-				const courseMatch = canvasState.courses.find(
-					(c) =>
-						(cal?.course_id && String(c.id) === String(cal.course_id)) ||
-						c.name === cal?.name ||
-						(c.original_name && c.original_name === cal?.name),
+				const startIso = ISOIsolateStart(ge);
+				const endIso = ISOIsolateEnd(ge);
+				const startD = new Date(startIso);
+				const endD = endIso
+					? new Date(endIso)
+					: new Date(startD.getTime() + 60 * 60 * 1000);
+				const startMin = startD.getHours() * 60 + startD.getMinutes();
+				const durationMin = Math.max(
+					25,
+					(endD.getTime() - startD.getTime()) / 60000,
 				);
-				if (courseMatch && (courseMatch.color || courseMatch.backgroundColor)) {
-					color = (courseMatch.color || courseMatch.backgroundColor)!;
-				} else if (cal?.color) {
-					color = cal.color;
-				} else if (pe.expand?.calendar?.color) {
-					color = pe.expand.calendar.color;
-				}
+				const endMin = startMin + durationMin;
+
+				const topPercent = Math.min(
+					95,
+					Math.max(4.0, ((1 + startMin / 60) / 25) * 100),
+				);
+				const heightPercent = Math.max(
+					2.0,
+					Math.min(25, (durationMin / 60 / 25) * 100),
+				);
+
+				const cal = googleCalendarState.calendars.find(
+					(c) => c.id === ge.calendarId,
+				);
+				const calName = cal?.nickname || cal?.summary || "Google Calendar";
+				const color = ge.color || cal?.backgroundColor || "#3b82f6";
+
+				const timeStr = `${startD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} - ${endD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+
+				items.push({
+					id: dedupeKey,
+					title: ge.title,
+					timeStr,
+					calendarName: calName,
+					color,
+					topPercent,
+					heightPercent,
+					startMin,
+					endMin,
+					colIndex: 0,
+					leftPercent: 0,
+					widthPercent: 100,
+					description: ge.description,
+					isTaskBlock: false,
+					source: "google",
+				});
 			}
 
-			// If event has an explicit custom color (e.g. Google or internal), use it
-			if (!color) {
-				color = pe.color || cal?.color || pe.expand?.calendar?.color || "#3b82f6";
-			}
-			const timeStr = `${startD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} - ${endD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+			for (const pe of peItems) {
+				let calId = pe.calendar || pe.expand?.calendar?.id || "";
+				const cal = calId ? calendarMap.get(calId) : undefined;
+				const calName =
+					cal?.nickname ||
+					cal?.name ||
+					pe.expand?.calendar?.nickname ||
+					pe.expand?.calendar?.name ||
+					"Coursework";
 
-			items.push({
-				id: dedupeKey,
-				rawId: pe.id,
-				title: pe.title,
-				timeStr,
-				calendarName: calName,
-				color,
-				topPercent,
-				heightPercent,
-				startMin,
-				endMin,
-				colIndex: 0,
-				leftPercent: 0,
-				widthPercent: 100,
-				description: pe.description,
-				isTaskBlock: Boolean(pe.task),
-				taskId: pe.task,
-				source: pe.task ? "canvas" : ((cal?.source as any) || "internal"),
-				rawEvent: pe,
-			});
-		}
+				const dedupeKey = `pb_${pe.id}`;
+				if (seenKeys.has(dedupeKey)) continue;
+				seenKeys.add(dedupeKey);
 
-		if (items.length === 0) return [];
+				const startIso = ISOIsolateStart(pe);
+				const endIso = ISOIsolateEnd(pe);
+				const startD = new Date(startIso);
+				const endD = endIso
+					? new Date(endIso)
+					: new Date(startD.getTime() + 60 * 60 * 1000);
+				const startMin = startD.getHours() * 60 + startD.getMinutes();
+				const durationMin = Math.max(
+					25,
+					(endD.getTime() - startD.getTime()) / 60000,
+				);
+				const endMin = startMin + durationMin;
 
-		// Sort items by startMin ascending, then duration descending
-		items.sort(
-			(a, b) =>
-				a.startMin - b.startMin ||
-				b.endMin - b.startMin - (a.endMin - a.startMin),
-		);
+				const topPercent = Math.min(
+					95,
+					Math.max(4.0, ((1 + startMin / 60) / 25) * 100),
+				);
+				const heightPercent = Math.max(
+					2.0,
+					Math.min(25, (durationMin / 60 / 25) * 100),
+				);
 
-		// Group into overlapping clusters
-		const clusters: RawTimedItem[][] = [];
-		let currentCluster: RawTimedItem[] = [];
-		let clusterEndMin = -1;
-
-		for (const item of items) {
-			if (currentCluster.length === 0) {
-				currentCluster.push(item);
-				clusterEndMin = item.endMin;
-			} else if (item.startMin < clusterEndMin) {
-				currentCluster.push(item);
-				clusterEndMin = Math.max(clusterEndMin, item.endMin);
-			} else {
-				clusters.push(currentCluster);
-				currentCluster = [item];
-				clusterEndMin = item.endMin;
-			}
-		}
-		if (currentCluster.length > 0) {
-			clusters.push(currentCluster);
-		}
-
-		// Within each cluster, pack into sub-columns (width sharing)
-		for (const cluster of clusters) {
-			const columns: RawTimedItem[][] = [];
-
-			for (const item of cluster) {
-				let placed = false;
-				for (let c = 0; c < columns.length; c++) {
-					const lastInCol = columns[c][columns[c].length - 1];
-					if (lastInCol.endMin <= item.startMin) {
-						columns[c].push(item);
-						item.colIndex = c;
-						placed = true;
-						break;
+				let color = "";
+				if (cal?.source === "canvas" || cal?.course_id || pe.task) {
+					const courseMatch = canvasState.courses.find(
+						(c) =>
+							(cal?.course_id && String(c.id) === String(cal.course_id)) ||
+							c.name === cal?.name ||
+							(c.original_name && c.original_name === cal?.name),
+					);
+					if (
+						courseMatch &&
+						(courseMatch.color || courseMatch.backgroundColor)
+					) {
+						color = (courseMatch.color || courseMatch.backgroundColor)!;
+					} else if (cal?.color) {
+						color = cal.color;
+					} else if (pe.expand?.calendar?.color) {
+						color = pe.expand.calendar.color;
 					}
 				}
-				if (!placed) {
-					item.colIndex = columns.length;
-					columns.push([item]);
+				if (!color) {
+					color =
+						pe.color || cal?.color || pe.expand?.calendar?.color || "#3b82f6";
+				}
+				const timeStr = `${startD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} - ${endD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+
+				items.push({
+					id: dedupeKey,
+					rawId: pe.id,
+					title: pe.title,
+					timeStr,
+					calendarName: calName,
+					color,
+					topPercent,
+					heightPercent,
+					startMin,
+					endMin,
+					colIndex: 0,
+					leftPercent: 0,
+					widthPercent: 100,
+					description: pe.description,
+					isTaskBlock: Boolean(pe.task),
+					taskId: pe.task,
+					source: pe.task ? "canvas" : (cal?.source as any) || "internal",
+					rawEvent: pe,
+				});
+			}
+
+			if (items.length === 0) continue;
+
+			items.sort(
+				(a, b) =>
+					a.startMin - b.startMin ||
+					b.endMin - b.startMin - (a.endMin - a.startMin),
+			);
+
+			const clusters: RawTimedItem[][] = [];
+			let currentCluster: RawTimedItem[] = [];
+			let clusterEndMin = -1;
+
+			for (const item of items) {
+				if (currentCluster.length === 0) {
+					currentCluster.push(item);
+					clusterEndMin = item.endMin;
+				} else if (item.startMin < clusterEndMin) {
+					currentCluster.push(item);
+					clusterEndMin = Math.max(clusterEndMin, item.endMin);
+				} else {
+					clusters.push(currentCluster);
+					currentCluster = [item];
+					clusterEndMin = item.endMin;
+				}
+			}
+			if (currentCluster.length > 0) {
+				clusters.push(currentCluster);
+			}
+
+			for (const cluster of clusters) {
+				const columns: RawTimedItem[][] = [];
+				for (const item of cluster) {
+					let placed = false;
+					for (let c = 0; c < columns.length; c++) {
+						const lastInCol = columns[c][columns[c].length - 1];
+						if (lastInCol.endMin <= item.startMin) {
+							columns[c].push(item);
+							item.colIndex = c;
+							placed = true;
+							break;
+						}
+					}
+					if (!placed) {
+						item.colIndex = columns.length;
+						columns.push([item]);
+					}
+				}
+
+				const totalCols = columns.length;
+				for (let c = 0; c < totalCols; c++) {
+					for (const item of columns[c]) {
+						item.leftPercent = (c / totalCols) * 100;
+						item.widthPercent = 100 / totalCols;
+					}
+				}
+
+				for (const item of cluster) {
+					let colSpan = 1;
+					while (item.colIndex + colSpan < totalCols) {
+						const targetCol = columns[item.colIndex + colSpan];
+						const hasOverlap = targetCol.some(
+							(other) =>
+								item.startMin < other.endMin && other.startMin < item.endMin,
+						);
+						if (hasOverlap) break;
+						colSpan++;
+					}
+
+					item.leftPercent = (item.colIndex / totalCols) * 100;
+					item.widthPercent = (colSpan / totalCols) * 100;
 				}
 			}
 
-			const totalCols = columns.length;
-
-			for (const item of cluster) {
-				let colSpan = 1;
-				while (item.colIndex + colSpan < totalCols) {
-					const targetCol = columns[item.colIndex + colSpan];
-					const hasOverlap = targetCol.some(
-						(other) =>
-							item.startMin < other.endMin && other.startMin < item.endMin,
-					);
-					if (hasOverlap) break;
-					colSpan++;
-				}
-
-				item.leftPercent = (item.colIndex / totalCols) * 100;
-				item.widthPercent = (colSpan / totalCols) * 100;
-			}
+			map.set(key, items);
 		}
 
-		return items;
+		return map;
+	});
+
+	function getDayTimedEvents(date: DateValue): FormattedTimedEvent[] {
+		const key = `${date.year}-${date.month}-${date.day}`;
+		return timedEventsByDate.get(key) || [];
 	}
 
 	interface DragHoverState {
@@ -873,8 +1110,6 @@
 		color: string;
 		courseName: string;
 	}
-
-	let dragHoverState = $state<DragHoverState | null>(null);
 
 	function formatTimeFromHourMin(hour: number, min: number): string {
 		const d = new Date();
@@ -954,10 +1189,7 @@
 		if (!payload) return;
 
 		const columnEl = e.currentTarget as HTMLElement;
-		const { startHour, startMin } = getSnappedTimeFromY(
-			e.clientY,
-			columnEl,
-		);
+		const { startHour, startMin } = getSnappedTimeFromY(e.clientY, columnEl);
 
 		const startDate = new Date(
 			date.year,
@@ -1008,24 +1240,18 @@
 
 		// 2. Persist to PocketBase
 		try {
-			const created = await pb.collection("events").create<EventRecord>(
-				{
-					calendar: targetCalId,
-					task: payload.taskId,
-					title: payload.taskName,
-					start: startDate.toISOString(),
-					end: endDate.toISOString(),
-					allday: false,
-					deadline: false,
-					color: "", // Inherits from calendar
-					description: `Work session for ${payload.taskName}`,
-				},
-				{
-					expand: "calendar,task",
-				},
-			);
+			const created = await addEventRecord({
+				calendar: targetCalId,
+				task: payload.taskId,
+				title: payload.taskName,
+				start: startDate.toISOString(),
+				end: endDate.toISOString(),
+				allday: false,
+				deadline: false,
+				color: "", // Inherits from calendar
+				description: `Work session for ${payload.taskName}`,
+			});
 
-			// Replace optimistic record with server record
 			pbEvents = pbEvents.map((ev) => (ev.id === tempId ? created : ev));
 		} catch (err) {
 			console.error("Failed to create work session event:", err);
@@ -1050,22 +1276,15 @@
 		}
 	}
 
-	// Buffer 16 days offscreen on both sides: 16 + 7 + 16 = 39 days
 	const BUFFER = 16;
 	const VISIBLE_COUNT = 7;
-	const TOTAL_COUNT = BUFFER + VISIBLE_COUNT + BUFFER; // 39
+	const TOTAL_COUNT = BUFFER + VISIBLE_COUNT + BUFFER;
 	const ALL_OFFSETS = $derived(
 		Array.from(
 			{ length: TOTAL_COUNT },
 			(_, i) => i - (BUFFER + themeState.calendarOffset),
 		),
 	);
-
-	let baseDate = $state<DateValue>(dayState.value);
-	let prevDate = $state<DateValue>(dayState.value);
-	let offsetDays = $state(0);
-	let isAnimating = $state(false);
-
 	// Watch dayState.value changes
 	$effect(() => {
 		const targetDate = dayState.value;
@@ -1076,18 +1295,15 @@
 
 		// If a single user action jumped more than 4 days (e.g. from calendar picker):
 		// Instantly snap without animation
-		if (Math.abs(delta) > 4) {
+		if (Math.abs(delta) > 15) {
 			isAnimating = false;
 			offsetDays = 0;
 			baseDate = targetDate;
 			return;
 		}
 
-		// Incremental step (<= 4 days, e.g. clicking inc/dec or adjacent days):
-		// Add to offsetDays and smoothly glide without resetting mid-spam
 		const newOffset = offsetDays + delta;
 
-		// Safeguard in case of extreme rapid spamming exceeding buffer
 		if (Math.abs(newOffset) > BUFFER - 2) {
 			isAnimating = false;
 			offsetDays = 0;
@@ -1298,14 +1514,16 @@
 				size="icon"
 				class="size-8 rounded-lg border border-border bg-background hover:bg-muted text-foreground cursor-pointer shadow-sm transition-all"
 				onclick={handleGlobalSync}
-				disabled={isGlobalSyncing}
-				title={isGlobalSyncing
+				disabled={syncState.isAnySyncing}
+				title={syncState.isAnySyncing
 					? "Syncing Canvas & Google Calendar..."
 					: "Sync Canvas & Google Calendar"}
 				aria-label="Sync Canvas & Google Calendar"
 			>
 				<RefreshCwIcon
-					class="size-3.5 {isGlobalSyncing ? 'animate-spin text-primary' : ''}"
+					class="size-3.5 {syncState.isAnySyncing
+						? 'animate-spin text-primary'
+						: ''}"
 				/>
 			</Button>
 		</div>
@@ -1365,6 +1583,7 @@
 							})}
 							{@const timedEvents = getDayTimedEvents(colDate)}
 							{@const deadlines = getDayDeadlines(colDate)}
+							{@const announcements = getDayAnnouncements(colDate)}
 							{@const isColToday = isToday(colDate, getLocalTimeZone())}
 							{@const visibleIdx = index - BUFFER - offsetDays}
 
@@ -1372,7 +1591,10 @@
 								role="region"
 								aria-label={`Calendar column for ${colDate.toString()}`}
 								style="flex: 0 0 calc(100% / {TOTAL_COUNT});"
-								class="h-full relative border-r border-border/30 last:border-r-0 min-w-0 overflow-visible hover:z-50 {dragHoverState && dragHoverState.colDateKey === colDate.toString() ? 'bg-primary/5 ring-1 ring-inset ring-primary/20' : ''}"
+								class="h-full relative border-r border-border/30 last:border-r-0 min-w-0 overflow-visible hover:z-50 {dragHoverState &&
+								dragHoverState.colDateKey === colDate.toString()
+									? 'bg-primary/5 ring-1 ring-inset ring-primary/20'
+									: ''}"
 								ondragenter={(e) => handleDragEnter(e, colDate)}
 								ondragover={(e) => handleDragOver(e, colDate)}
 								ondragleave={(e) => handleDragLeave(e, colDate)}
@@ -1418,8 +1640,16 @@
 												{dragHoverState.taskTitle}
 											</span>
 										</div>
-										<span class="text-[9px] text-muted-foreground font-mono mt-0.5">
-											{formatTimeFromHourMin(dragHoverState.startHour, dragHoverState.startMin)} – {formatTimeFromHourMin(dragHoverState.startHour + 1, dragHoverState.startMin)}
+										<span
+											class="text-[9px] text-muted-foreground font-mono mt-0.5"
+										>
+											{formatTimeFromHourMin(
+												dragHoverState.startHour,
+												dragHoverState.startMin,
+											)} – {formatTimeFromHourMin(
+												dragHoverState.startHour + 1,
+												dragHoverState.startMin,
+											)}
 										</span>
 									</div>
 								{/if}
@@ -1446,7 +1676,9 @@
 											"
 										>
 											<!-- Line 1: Title & Delete button for work sessions -->
-											<div class="flex items-center justify-between gap-1 min-w-0 w-full">
+											<div
+												class="flex items-center justify-between gap-1 min-w-0 w-full"
+											>
 												<span
 													class="truncate font-semibold text-[10px] text-white drop-shadow-xs leading-tight flex-1 min-w-0"
 												>
@@ -1548,6 +1780,112 @@
 													{evt.description}
 												</p>
 											{/if}
+										</div>
+									</div>
+								{/each}
+
+								<!-- Announcement lines -->
+								{#each announcements as ann (ann.id)}
+									<div
+										class="absolute pointer-events-auto group/announcement select-none flex items-center cursor-pointer z-10 hover:z-50 overflow-visible {ann.isEndOfDay
+											? 'py-2 items-end'
+											: 'py-2.5 items-center'}"
+										style="
+											left: calc({ann.leftPercent}% + 1.5px);
+											width: calc({ann.widthPercent}% - 3px);
+											{ann.isEndOfDay
+											? 'bottom: 0px;'
+											: `top: ${ann.topPercent}%; transform: translateY(-50%);`}
+										"
+									>
+										<!-- Left line: thinner than deadline on sides (h-[2px] vs h-1) -->
+										<div
+											class="flex-1 h-[2px] rounded-full transition-opacity duration-150 opacity-80 group-hover/announcement:opacity-100"
+											style="
+												background-color: {ann.color};
+												box-shadow: 0 0 4px {ann.color}70, 0 1px 2px rgba(0,0,0,0.1);
+											"
+										></div>
+
+										<!-- Middle pill with megaphone icon -->
+										<div
+											class="px-2 py-0.5 rounded-full flex items-center justify-center gap-1 shadow-xs transition-transform duration-150 group-hover/announcement:scale-110 shrink-0 z-10 mx-1"
+											style="
+												background-color: {ann.color};
+												box-shadow: 0 0 6px {ann.color}80, 0 1px 2px rgba(0,0,0,0.2);
+											"
+										>
+											<MegaphoneIcon
+												class="size-2.5 sm:size-3 text-white fill-white/20"
+											/>
+										</div>
+
+										<!-- Right line: thinner than deadline on sides (h-[2px] vs h-1) -->
+										<div
+											class="flex-1 h-[2px] rounded-full transition-opacity duration-150 opacity-80 group-hover/announcement:opacity-100"
+											style="
+												background-color: {ann.color};
+												box-shadow: 0 0 4px {ann.color}70, 0 1px 2px rgba(0,0,0,0.1);
+											"
+										></div>
+
+										<!-- Hover Details Card -->
+										<div
+											class="absolute hidden group-hover/announcement:flex flex-col gap-1.5 z-[100] pointer-events-none p-2.5 rounded-lg bg-popover border border-border shadow-2xl text-popover-foreground text-xs min-w-[200px] max-w-[260px] animate-in fade-in zoom-in-95 duration-150
+												{ann.isEndOfDay || ann.topPercent > 70 ? 'bottom-full mb-2' : 'top-full mt-2'}
+												{visibleIdx === 0
+												? 'left-0'
+												: visibleIdx === 6
+													? 'right-0'
+													: 'left-1/2 -translate-x-1/2'}"
+										>
+											<!-- Course Header -->
+											<div class="flex items-center justify-between gap-2">
+												<div class="flex items-center gap-1.5 min-w-0">
+													<span
+														class="size-2 rounded-full shrink-0"
+														style="background-color: {ann.color};"
+													></span>
+													<span
+														class="font-semibold text-[11px] truncate"
+														style="color: {ann.color};"
+													>
+														{ann.courseName}
+													</span>
+												</div>
+												<span
+													class="text-[10px] text-muted-foreground font-mono shrink-0"
+												>
+													{ann.timeStr}
+												</span>
+											</div>
+
+											<!-- Announcement Title -->
+											<p
+												class="font-medium text-xs leading-snug text-foreground"
+											>
+												{ann.title}
+											</p>
+
+											{#if ann.description}
+												<p
+													class="text-[11px] text-muted-foreground line-clamp-2 leading-relaxed"
+												>
+													{ann.description.replace(/<[^>]*>?/gm, "")}
+												</p>
+											{/if}
+
+											<!-- Status & Tag Footer -->
+											<div
+												class="flex items-center justify-between pt-1 border-t border-border/40 text-[10px] text-muted-foreground"
+											>
+												<span
+													class="inline-flex items-center gap-1 font-medium text-primary"
+												>
+													<MegaphoneIcon class="size-3 text-primary" />
+													Announcement
+												</span>
+											</div>
 										</div>
 									</div>
 								{/each}

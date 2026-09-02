@@ -77,7 +77,10 @@
 		e.preventDefault();
 		isSavingNickname = true;
 		try {
-			await googleCalendarState.updateNickname(calendarId, nicknameInput.trim());
+			await googleCalendarState.updateNickname(
+				calendarId,
+				nicknameInput.trim(),
+			);
 			nicknameSuccessId = calendarId;
 			setTimeout(() => {
 				if (nicknameSuccessId === calendarId) nicknameSuccessId = null;
@@ -172,7 +175,8 @@
 	</div>
 
 	<p class="text-xs text-muted-foreground w-full">
-		Connect Google Calendar to sync all your coursework and deadlines to a dedicated
+		Connect Google Calendar to sync all your coursework and deadlines to a
+		dedicated
 		<strong class="text-foreground">Lasso</strong> calendar.
 	</p>
 
@@ -199,21 +203,32 @@
 			</div>
 
 			<!-- DEDICATED LASSO CALENDAR SYNC CARD -->
-			<div class="rounded-xl border border-primary/25 bg-primary/5 p-4 space-y-3">
-				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+			<div
+				class="rounded-xl border border-primary/25 bg-primary/5 p-4 space-y-3"
+			>
+				<div
+					class="flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+				>
 					<div class="flex items-start gap-3">
-						<div class="size-8 rounded-md bg-primary flex items-center justify-center text-primary-foreground shrink-0 mt-0.5 shadow-xs">
+						<div
+							class="size-8 rounded-md bg-primary flex items-center justify-center text-primary-foreground shrink-0 mt-0.5 shadow-xs"
+						>
 							<SparklesIcon class="size-4" />
 						</div>
 						<div>
 							<div class="flex items-center gap-2">
-								<span class="text-sm font-semibold text-foreground">Lasso Calendar</span>
-								<span class="inline-flex items-center rounded-full bg-primary/20 px-2 py-0.5 text-[10px] font-medium text-primary leading-none">
+								<span class="text-sm font-semibold text-foreground"
+									>Lasso Calendar</span
+								>
+								<span
+									class="inline-flex items-center rounded-full bg-primary/20 px-2 py-0.5 text-[10px] font-medium text-primary leading-none"
+								>
 									Dedicated Sync Target
 								</span>
 							</div>
 							<p class="text-xs text-muted-foreground mt-0.5">
-								All Canvas coursework and deadlines are pushed to this calendar in Google, tagged by course.
+								All Canvas coursework and deadlines are pushed to this calendar
+								in Google, tagged by course.
 							</p>
 						</div>
 					</div>
@@ -273,13 +288,25 @@
 					</div>
 				{/if}
 
-				<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-muted-foreground pt-1 border-t border-primary/10">
+				<div
+					class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-muted-foreground pt-1 border-t border-primary/10"
+				>
 					<div class="flex items-center gap-1.5">
 						<TagIcon class="size-3 text-primary" />
-						<span>Event Title Format: <code class="font-mono text-foreground text-[10px] px-1 py-0.5 bg-background rounded border border-border/50">[Course] Assignment Name</code></span>
+						<span
+							>Event Title Format: <code
+								class="font-mono text-foreground text-[10px] px-1 py-0.5 bg-background rounded border border-border/50"
+								>[Course] Assignment Name</code
+							></span
+						>
 					</div>
 					{#if googleCalendarState.lastSyncedToGoogle}
-						<span>Last synced: {googleCalendarState.lastSyncedToGoogle.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+						<span
+							>Last synced: {googleCalendarState.lastSyncedToGoogle.toLocaleTimeString(
+								[],
+								{ hour: "numeric", minute: "2-digit" },
+							)}</span
+						>
 					{/if}
 				</div>
 			</div>
@@ -416,7 +443,10 @@
 		>
 			<p class="text-xs text-muted-foreground">
 				{#if authState.user?.email}
-					Signed in as <span class="font-medium font-mono text-foreground">{authState.user.email}</span>. Connect to create your dedicated Lasso calendar and view personal events.
+					Signed in as <span class="font-medium font-mono text-foreground"
+						>{authState.user.email}</span
+					>. Connect to create your dedicated Lasso calendar and view personal
+					events.
 				{:else}
 					Sign in with Google to synchronize your calendars with Lasso.
 				{/if}
@@ -482,7 +512,8 @@
 						class="text-xs text-muted-foreground leading-relaxed"
 					>
 						Are you sure you want to disconnect Google Calendar? This will clear
-						your stored Google credentials. Your personal calendars remain untouched.
+						your stored Google credentials. Your personal calendars remain
+						untouched.
 					</p>
 				</div>
 			</div>
@@ -519,14 +550,19 @@
 <!-- Reusable snippet for calendar item card with interactive details and nickname editing -->
 {#snippet calendarItem(calendar: GoogleCalendar, swatchColor: string)}
 	{@const isExpanded = expandedCalendarId === calendar.id}
-	{@const isHiddenInSidebar = calendarVisibilityState.isHiddenInSidebar(calendar.id, calendar.summary)}
+	{@const isHiddenInSidebar = calendarVisibilityState.isHiddenInSidebar(
+		calendar.id,
+		calendar.summary,
+	)}
 	<div
 		class="rounded-lg border border-border bg-card/60 overflow-hidden transition-all duration-200 {isExpanded
 			? 'border-primary/50 shadow-xs ring-1 ring-primary/20'
 			: 'hover:border-border/80'}"
 	>
 		<!-- Clickable header card with right-aligned grey outlined visibility button -->
-		<div class="w-full p-2.5 flex items-center justify-between gap-2.5 select-none">
+		<div
+			class="w-full p-2.5 flex items-center justify-between gap-2.5 select-none"
+		>
 			<button
 				type="button"
 				class="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer text-left group bg-transparent border-none p-0"
@@ -534,10 +570,16 @@
 				aria-expanded={isExpanded}
 			>
 				<span
-					class="size-2.5 rounded-xs shrink-0 shadow-2xs transition-opacity {isHiddenInSidebar ? 'opacity-40' : ''}"
+					class="size-2.5 rounded-xs shrink-0 shadow-2xs transition-opacity {isHiddenInSidebar
+						? 'opacity-40'
+						: ''}"
 					style="background-color: {swatchColor};"
 				></span>
-				<span class="font-medium truncate text-xs leading-none {isHiddenInSidebar ? 'text-muted-foreground line-through opacity-75' : 'text-foreground'}">
+				<span
+					class="font-medium truncate text-xs leading-none {isHiddenInSidebar
+						? 'text-muted-foreground line-through opacity-75'
+						: 'text-foreground'}"
+				>
 					{calendar.nickname || calendar.summary}
 				</span>
 				{#if calendar.primary}
@@ -553,13 +595,20 @@
 				<!-- Grey outlined visibility button matching CanvasCard -->
 				<button
 					type="button"
-					class="size-7 rounded-md border border-border/70 text-muted-foreground hover:text-foreground hover:border-foreground/40 hover:bg-muted/40 flex items-center justify-center transition-colors cursor-pointer {isHiddenInSidebar ? 'opacity-50' : ''}"
+					class="size-7 rounded-md border border-border/70 text-muted-foreground hover:text-foreground hover:border-foreground/40 hover:bg-muted/40 flex items-center justify-center transition-colors cursor-pointer {isHiddenInSidebar
+						? 'opacity-50'
+						: ''}"
 					onclick={(e) => {
 						e.stopPropagation();
-						calendarVisibilityState.toggleSidebarVisibility(calendar.id, calendar.summary);
+						calendarVisibilityState.toggleSidebarVisibility(
+							calendar.id,
+							calendar.summary,
+						);
 					}}
-					title={isHiddenInSidebar ? 'Hidden in sidebar (click to show)' : 'Visible in sidebar (click to hide)'}
-					aria-label={isHiddenInSidebar ? 'Show in sidebar' : 'Hide in sidebar'}
+					title={isHiddenInSidebar
+						? "Hidden in sidebar (click to show)"
+						: "Visible in sidebar (click to hide)"}
+					aria-label={isHiddenInSidebar ? "Show in sidebar" : "Hide in sidebar"}
 				>
 					{#if isHiddenInSidebar}
 						<EyeOffIcon class="size-3.5" />
