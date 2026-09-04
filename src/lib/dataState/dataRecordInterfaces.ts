@@ -83,6 +83,7 @@ export interface SyncStatusRecord {
 	google_export_synced_at?: string;
 	google_export_error?: string;
 	google_export_feedback?: string;
+	google_export_enabled: boolean;
 
 	// Chronological sync history log (capped to last 20-50 entries)
 	history?: SyncHistoryEntry[];

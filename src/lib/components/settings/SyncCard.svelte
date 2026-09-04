@@ -141,11 +141,6 @@
 	<!-- Header -->
 	<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
 		<div class="flex items-center gap-3">
-			<div
-				class="size-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0"
-			>
-				<RefreshCwIcon class="size-5" />
-			</div>
 			<div>
 				<h2
 					class="text-base font-normal tracking-wide text-card-foreground leading-none"
@@ -202,7 +197,9 @@
 				description="Import coursework"
 				icon={GraduationCapIcon}
 				isSynced={isCanvasActive}
-				isSyncing={dataState.isCanvasSyncing || syncState.isSyncingCanvas || syncState.syncingStep === "canvas"}
+				isSyncing={dataState.isCanvasSyncing ||
+					syncState.isSyncingCanvas ||
+					syncState.syncingStep === "canvas"}
 				syncingLabel="Syncing"
 				isConnected={syncState.isCanvasConnected}
 				lastSynced={canvasLastSynced}
@@ -232,7 +229,8 @@
 				description="Fetch calendars"
 				icon={CalendarIcon}
 				isSynced={isGoogleInActive}
-				isSyncing={dataState.isGoogleImporting || syncState.isSyncingGoogleIn ||
+				isSyncing={dataState.isGoogleImporting ||
+					syncState.isSyncingGoogleIn ||
 					syncState.syncingStep === "google-in"}
 				syncingLabel="Fetching"
 				isConnected={syncState.isGoogleConnected}
@@ -263,7 +261,8 @@
 				description="Push tasks"
 				icon={UploadCloudIcon}
 				isSynced={isGoogleOutActive}
-				isSyncing={dataState.isGoogleExporting || syncState.isSyncingGoogleOut ||
+				isSyncing={dataState.isGoogleExporting ||
+					syncState.isSyncingGoogleOut ||
 					syncState.syncingStep === "google-out"}
 				syncingLabel="Pushing"
 				isConnected={syncState.isGoogleConnected}

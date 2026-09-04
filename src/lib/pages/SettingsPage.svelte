@@ -25,7 +25,9 @@
 		>
 			<ArrowLeftIcon class="size-4.5" />
 		</Button>
-		<h2 class="text-base font-normal tracking-wide text-foreground leading-none">
+		<h2
+			class="text-base font-normal tracking-wide text-foreground leading-none"
+		>
 			Settings
 		</h2>
 	</header>

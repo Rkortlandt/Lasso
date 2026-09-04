@@ -74,7 +74,9 @@
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+					Authorization: pb.authStore.token
+						? `Bearer ${pb.authStore.token}`
+						: "",
 				},
 				body: JSON.stringify({ courseId, nickname: trimmedNickname }),
 			}).catch(() => {});
@@ -97,7 +99,9 @@
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+					Authorization: pb.authStore.token
+						? `Bearer ${pb.authStore.token}`
+						: "",
 				},
 				body: JSON.stringify({ courseId, nickname: "" }),
 			}).catch(() => {});
@@ -142,13 +146,20 @@
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+					Authorization: pb.authStore.token
+						? `Bearer ${pb.authStore.token}`
+						: "",
 				},
-				body: JSON.stringify({ canvasUrl: cleanUrl, canvasToken: canvasToken.trim() }),
+				body: JSON.stringify({
+					canvasUrl: cleanUrl,
+					canvasToken: canvasToken.trim(),
+				}),
 			});
 			const data = await res.json();
 			if (!res.ok || !data.success) {
-				throw new Error(data.message || data.error || "Failed to verify Canvas token");
+				throw new Error(
+					data.message || data.error || "Failed to verify Canvas token",
+				);
 			}
 
 			await pb.collection("users").authRefresh();
@@ -169,7 +180,9 @@
 			await fetch(`${POCKETBASE_URL}/api/canvas/disconnect`, {
 				method: "POST",
 				headers: {
-					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+					Authorization: pb.authStore.token
+						? `Bearer ${pb.authStore.token}`
+						: "",
 				},
 			}).catch(() => {});
 
@@ -199,8 +212,7 @@
 			syncAlert = {
 				type: "success",
 				message:
-					res?.message ||
-					`Successfully synced Canvas courses and assignments.`,
+					res?.message || `Successfully synced Canvas courses and assignments.`,
 			};
 			setTimeout(() => {
 				syncAlert = null;
@@ -218,34 +230,27 @@
 
 <!-- Canvas LMS integration status with grouped sections -->
 <div class="rounded-xl border border-border bg-card p-6 shadow-xs space-y-3">
-	<div class="flex items-center justify-between">
-		<div class="flex items-center gap-3">
-			<div
-				class="size-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0"
-			>
-				<BookOpenIcon class="size-5" />
-			</div>
+	<div>
+		<div class="flex items-center justify-between">
 			<h2
 				class="text-base font-normal tracking-wide text-card-foreground leading-none"
 			>
 				Canvas LMS
 			</h2>
+
+			{#if !isConnected}
+				<span
+					class="inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground leading-none"
+				>
+					Not Connected
+				</span>
+			{/if}
 		</div>
 
-		{#if !isConnected}
-			<span
-				class="inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground leading-none"
-			>
-				Not Connected
-			</span>
-		{/if}
+		<p class="text-xs py-1 text-muted-foreground w-full">
+			Track academic courses, section schedules, and assignment deadlines.
+		</p>
 	</div>
-
-	<p class="text-xs text-muted-foreground w-full">
-		Synchronize academic courses, section schedules, and assignment deadlines.
-		Click a section to view dates or customize course nicknames.
-	</p>
-
 	{#if isConnected}
 		<div class="mt-4 pt-4 border-t border-border flex flex-col gap-4">
 			<div
@@ -255,7 +260,8 @@
 					<div>
 						<span class="text-muted-foreground">Institution: </span>
 						<span class="font-medium font-mono text-foreground"
-							>{authState.record?.canvas_url || "https://canvas.instructure.com"}</span
+							>{authState.record?.canvas_url ||
+								"https://canvas.instructure.com"}</span
 						>
 					</div>
 					{#if authState.record?.canvas_student_name}
@@ -582,14 +588,20 @@
 
 					<div class="flex flex-col gap-0.5">
 						<span class="text-muted-foreground">Calendar ID</span>
-						<span class="font-mono text-foreground font-medium truncate" title={course.id}>
+						<span
+							class="font-mono text-foreground font-medium truncate"
+							title={course.id}
+						>
 							{course.id}
 						</span>
 					</div>
 
 					<div class="flex flex-col gap-0.5">
 						<span class="text-muted-foreground">Original Name</span>
-						<span class="font-mono text-foreground font-medium truncate" title={course.name}>
+						<span
+							class="font-mono text-foreground font-medium truncate"
+							title={course.name}
+						>
 							{course.name}
 						</span>
 					</div>
@@ -649,8 +661,8 @@
 							{/if}
 						</div>
 						<p class="text-[10px] text-muted-foreground">
-							Stored in your Lasso workspace. Customizes the course
-							title on your calendar and sidebar.
+							Stored in your Lasso workspace. Customizes the course title on
+							your calendar and sidebar.
 						</p>
 					</form>
 				</div>

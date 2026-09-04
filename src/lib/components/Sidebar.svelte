@@ -23,9 +23,8 @@
 	import EyeIcon from "@lucide/svelte/icons/eye";
 	import EyeOffIcon from "@lucide/svelte/icons/eye-off";
 	import Pipette from "@lucide/svelte/icons/pipette";
-	import GripVertical from "@lucide/svelte/icons/grip-vertical";
+	import SidebarTaskItem from "$lib/components/SidebarTaskItem.svelte";
 	import { calendarVisibilityState } from "$lib/calendarVisibilityState.svelte";
-	import { dragState, type DragTaskPayload } from "$lib/dragState.svelte";
 	import { fly, fade, slide } from "svelte/transition";
 
 	const CALENDAR_STORAGE_KEY = "lasso_sidebar_calendar_open";
@@ -36,7 +35,6 @@
 	import { dataState } from "$lib/dataState/dataState.svelte";
 	import {
 		getTasksByCourse,
-		parseTaskCalendarId,
 		sortTasksChronological,
 		sortTasksCompleted,
 		type TaskGroup,
@@ -208,98 +206,8 @@
 		}
 	}
 
-	async function setTaskState(task: PocketBaseTask) {
-		const calId = parseTaskCalendarId(task);
-		const cal = calId ? dataState.calendars.find((c) => c.id === calId) : null;
-		if (
-			cal?.source === "canvas" ||
-			task.expand?.calendar?.source === "canvas"
-		) {
-			return; // Canvas task state is managed by Canvas
-		}
-
-		const nextStatus = task.status === "done" ? "todo" : "done";
-		try {
-			await dataState.updateTask(task.id, { status: nextStatus });
-		} catch (err) {
-			console.error("Failed to update task:", err);
-		}
-	}
-
-	function formatDueDate(dueStr?: string): string {
-		if (!dueStr) return "";
-		try {
-			const d = new Date(dueStr);
-			if (isNaN(d.getTime())) return "";
-			const now = new Date();
-			const isSameDay =
-				d.getFullYear() === now.getFullYear() &&
-				d.getMonth() === now.getMonth() &&
-				d.getDate() === now.getDate();
-			const tomorrow = new Date(now);
-			tomorrow.setDate(tomorrow.getDate() + 1);
-			const isTomorrow =
-				d.getFullYear() === tomorrow.getFullYear() &&
-				d.getMonth() === tomorrow.getMonth() &&
-				d.getDate() === tomorrow.getDate();
-
-			const timeStr = d.toLocaleTimeString([], {
-				hour: "numeric",
-				minute: "2-digit",
-			});
-
-			if (isSameDay) {
-				return `Today ${timeStr}`;
-			}
-			if (isTomorrow) {
-				return `Tomorrow ${timeStr}`;
-			}
-			const monthDay = d.toLocaleDateString(undefined, {
-				month: "short",
-				day: "numeric",
-			});
-			return `${monthDay}`;
-		} catch {
-			return "";
-		}
-	}
-
-
 	function getCalendarColor(cal?: PocketBaseCalendar | null): string {
 		return resolveCalendarColor(cal);
-	}
-
-	function handleDragStart(
-		e: DragEvent,
-		task: PocketBaseTask,
-		cal: PocketBaseCalendar,
-	) {
-		if (!e.dataTransfer) return;
-		const calId = parseTaskCalendarId(task) || cal.id;
-		const color = getCalendarColor(cal) || task.expand?.calendar?.color || "#3b82f6";
-		const courseName =
-			cal.nickname ||
-			cal.name ||
-			task.expand?.calendar?.nickname ||
-			task.expand?.calendar?.name ||
-			"Coursework";
-
-		const payload: DragTaskPayload = {
-			taskId: task.id,
-			taskName: task.name,
-			calendarId: calId,
-			color,
-			courseName,
-		};
-
-		dragState.setTask(payload);
-		e.dataTransfer.setData("application/json", JSON.stringify(payload));
-		e.dataTransfer.setData("text/plain", task.name);
-		e.dataTransfer.effectAllowed = "copy";
-	}
-
-	function handleDragEnd() {
-		dragState.clear();
 	}
 
 	// Group tasks by calendar with tasks sorted chronologically by due_date
@@ -677,68 +585,10 @@
 											<!-- Upcoming assignments -->
 											{#if group.upcomingTasks.length > 0}
 												{#each visibleUpcoming as task (task.id)}
-													<div
-														role="button"
-														tabindex="0"
-														aria-label={`Drag ${task.name} to calendar`}
-														class="group/task flex items-start gap-1.5 px-1 py-1 rounded hover:bg-sidebar-accent/50 transition-colors text-xs cursor-grab active:cursor-grabbing select-none"
-														draggable="true"
-														ondragstart={(e) => handleDragStart(e, task, group.calendar)}
-														ondragend={handleDragEnd}
-													>
-														<!-- Drag cue on hover -->
-														<div
-															class="mt-1 opacity-0 group-hover/task:opacity-40 text-muted-foreground transition-opacity shrink-0 -mr-0.5"
-															title="Drag onto calendar"
-														>
-															<GripVertical class="size-2.5" />
-														</div>
-
-														<!-- Status indicator / toggle -->
-														{#if group.calendar.source === "canvas" || task.expand?.calendar?.source === "canvas"}
-															<span
-																class="mt-1.5 size-1.5 rounded-full shrink-0 mx-1 opacity-70 select-none"
-																style="background-color: {group.calendar
-																	.color || '#3b82f6'};"
-																title="Due on Canvas"
-															></span>
-														{:else}
-															<!-- Checkbox toggle button for manual tasks -->
-															<button
-																type="button"
-																class="mt-0.5 size-3.5 rounded border flex items-center justify-center shrink-0 transition-colors cursor-pointer border-muted-foreground/40 hover:border-primary"
-																onclick={(e) => {
-																	e.stopPropagation();
-																	setTaskState(task);
-																}}
-																aria-label="Mark as completed"
-															>
-															</button>
-														{/if}
-
-														<!-- Task info -->
-														<div class="flex-1 min-w-0 pointer-events-none">
-															<p
-																class="text-[11px] leading-snug truncate text-sidebar-foreground"
-																title={task.name}
-															>
-																{task.name}
-															</p>
-
-															{#if task.due_date}
-																{@const formattedDue = formatDueDate(
-																	task.due_date,
-																)}
-																{#if formattedDue}
-																	<span
-																		class="text-[9px] text-muted-foreground/75"
-																	>
-																		{formattedDue}
-																	</span>
-																{/if}
-															{/if}
-														</div>
-													</div>
+													<SidebarTaskItem
+														{task}
+														calendar={group.calendar}
+													/>
 												{/each}
 
 												{#if group.upcomingTasks.length > 7}
@@ -770,81 +620,11 @@
 												</div>
 
 												{#each visibleCompleted as task (task.id)}
-													<div
-														role="button"
-														tabindex="0"
-														aria-label={`Drag ${task.name} to calendar`}
-														class="group/task flex items-start gap-1.5 px-1 py-1 rounded hover:bg-sidebar-accent/50 transition-colors text-xs cursor-grab active:cursor-grabbing select-none"
-														draggable="true"
-														ondragstart={(e) => handleDragStart(e, task, group.calendar)}
-														ondragend={handleDragEnd}
-													>
-														<!-- Drag cue on hover -->
-														<div
-															class="mt-1 opacity-0 group-hover/task:opacity-40 text-muted-foreground transition-opacity shrink-0 -mr-0.5"
-															title="Drag onto calendar"
-														>
-															<GripVertical class="size-2.5" />
-														</div>
-
-														<!-- Status indicator / toggle -->
-														{#if group.calendar.source === "canvas" || task.expand?.calendar?.source === "canvas"}
-															<span
-																class="mt-0.5 size-3.5 flex items-center justify-center text-emerald-500 shrink-0 select-none"
-																title="Submitted on Canvas"
-															>
-																<CheckIcon class="size-3 stroke-[2.5]" />
-															</span>
-														{:else}
-															<!-- Checkbox toggle button for manual tasks -->
-															<button
-																type="button"
-																class="mt-0.5 size-3.5 rounded border flex items-center justify-center shrink-0 transition-colors cursor-pointer bg-primary border-primary text-primary-foreground"
-																onclick={(e) => {
-																	e.stopPropagation();
-																	setTaskState(task);
-																}}
-																aria-label="Mark as incomplete"
-															>
-																<CheckIcon class="size-2.5 stroke-[3]" />
-															</button>
-														{/if}
-
-														<!-- Task info -->
-														<div class="flex-1 min-w-0 pointer-events-none">
-															<div
-																class="flex items-center justify-between gap-1.5 min-w-0"
-															>
-																<p
-																	class="text-[11px] leading-snug truncate transition-colors line-through text-muted-foreground opacity-60 flex-1 min-w-0"
-																	title={task.name}
-																>
-																	{task.name}
-																</p>
-																{#if task.grade}
-																	<span
-																		class="text-[9px] font-semibold font-mono text-emerald-600 dark:text-emerald-400 shrink-0 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 leading-none"
-																		title={`Grade: ${task.grade}`}
-																	>
-																		{task.grade}
-																	</span>
-																{/if}
-															</div>
-
-															{#if task.due_date}
-																{@const formattedDue = formatDueDate(
-																	task.due_date,
-																)}
-																{#if formattedDue}
-																	<span
-																		class="text-[9px] text-muted-foreground/75 font-mono"
-																	>
-																		{formattedDue}
-																	</span>
-																{/if}
-															{/if}
-														</div>
-													</div>
+													<SidebarTaskItem
+														{task}
+														calendar={group.calendar}
+														completed={true}
+													/>
 												{/each}
 
 												{#if group.completedTasks.length > 3}

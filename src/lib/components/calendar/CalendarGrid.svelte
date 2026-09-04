@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
+	import { fade } from "svelte/transition";
 	import MegaphoneIcon from "@lucide/svelte/icons/megaphone";
 	import X from "@lucide/svelte/icons/x";
 	import { isToday, getLocalTimeZone, type CalendarDate, type DateValue } from "@internationalized/date";
@@ -52,6 +53,19 @@
 		onDeleteEvent,
 		onSelectItem,
 	}: Props = $props();
+
+	const isTodayVisible = $derived.by(() => {
+		return days.some((item, index) => {
+			if (!item.isToday) return false;
+			const currentIdx = index - buffer - slideAnimationDelta;
+			if (currentIdx >= 0 && currentIdx < visibleCount) return true;
+			if (isAnimating) {
+				const prevIdx = index - buffer;
+				if (prevIdx >= 0 && prevIdx < visibleCount) return true;
+			}
+			return false;
+		});
+	});
 
 	let dragHoverState = $state<DragHoverState | null>(null);
 	let scrollContainer = $state<HTMLDivElement | null>(null);
@@ -186,11 +200,14 @@
 					{/each}
 				</div>
 
-				<!-- Static current time subtle guide line across grid -->
-				<div
-					class="absolute left-0 right-0 h-[1px] bg-white/20 pointer-events-none z-20"
-					style="top: {currentDayTimePercent}%; transform: translateY(-50%);"
-				></div>
+				<!-- Static current time subtle guide line across grid (visible only when Today is in view) -->
+				{#if isTodayVisible}
+					<div
+						class="absolute left-0 right-0 h-[1px] bg-white/20 pointer-events-none z-20"
+						style="top: {currentDayTimePercent}%; transform: translateY(-50%);"
+						transition:fade={{ duration: 150 }}
+					></div>
+				{/if}
 
 				<!-- Sliding Days Track (39 columns animated in sync with header) -->
 				<div
@@ -221,10 +238,11 @@
 							ondrop={(e) => handleDrop(e, colDate)}
 						>
 							<!-- Prominent Today Current Time Indicator -->
-							{#if isColToday}
+							{#if isColToday && isTodayVisible}
 								<div
 									class="absolute left-0 right-0 z-30 pointer-events-none flex items-center"
 									style="top: {currentDayTimePercent}%; transform: translateY(-50%);"
+									transition:fade={{ duration: 150 }}
 								>
 									<div
 										class="w-[2px] h-3 bg-white shrink-0 rounded-full translate-x-[-75%]"

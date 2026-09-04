@@ -23,13 +23,16 @@
 	import SparklesIcon from "@lucide/svelte/icons/sparkles";
 	import Trash2Icon from "@lucide/svelte/icons/trash-2";
 	import { fade, slide, scale } from "svelte/transition";
+	import { SquareSwitch } from "$lib/components/ui/square-switch";
 
 	let showDisconnectModal = $state(false);
 
 	const isConnected = $derived(Boolean(authState.record?.google_connected));
 	const googleCalendars = $derived(getGoogleCalendars());
 	const readOnlyCalendars = $derived(
-		googleCalendars.filter((c) => (c.nickname || c.name).toLowerCase() !== "lasso"),
+		googleCalendars.filter(
+			(c) => (c.nickname || c.name).toLowerCase() !== "lasso",
+		),
 	);
 
 	// Detail & nickname state
@@ -38,6 +41,20 @@
 	let isSavingNickname = $state(false);
 	let nicknameSuccessId = $state<string | null>(null);
 	let isPurging = $state(false);
+	let isExportEnabled = $state(
+		typeof window !== "undefined"
+			? localStorage.getItem("lasso_google_export_enabled") !== "false"
+			: true,
+	);
+
+	$effect(() => {
+		if (typeof window !== "undefined") {
+			localStorage.setItem(
+				"lasso_google_export_enabled",
+				String(isExportEnabled),
+			);
+		}
+	});
 
 	const swatchColors = [
 		"#2563eb", // blue
@@ -75,7 +92,9 @@
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+					Authorization: pb.authStore.token
+						? `Bearer ${pb.authStore.token}`
+						: "",
 				},
 				body: JSON.stringify({ calendarId, nickname: trimmed }),
 			}).catch(() => {});
@@ -98,7 +117,9 @@
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+					Authorization: pb.authStore.token
+						? `Bearer ${pb.authStore.token}`
+						: "",
 				},
 				body: JSON.stringify({ calendarId, nickname: "" }),
 			}).catch(() => {});
@@ -130,7 +151,9 @@
 			await fetch(`${POCKETBASE_URL}/api/google/disconnect`, {
 				method: "POST",
 				headers: {
-					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+					Authorization: pb.authStore.token
+						? `Bearer ${pb.authStore.token}`
+						: "",
 				},
 			}).catch(() => {});
 
@@ -164,12 +187,16 @@
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+					Authorization: pb.authStore.token
+						? `Bearer ${pb.authStore.token}`
+						: "",
 				},
 			});
 			const data = await resp.json();
 			if (!resp.ok || !data.success) {
-				throw new Error(data.message || "Failed to purge Lasso Google calendar");
+				throw new Error(
+					data.message || "Failed to purge Lasso Google calendar",
+				);
 			}
 			await dataState.refresh();
 		} catch (err) {
@@ -181,205 +208,110 @@
 </script>
 
 <!-- Google Calendar integration status with grouped calendars -->
-<div class="rounded-xl border border-border bg-card p-6 shadow-xs space-y-4">
+<div class="rounded-xl border border-border bg-card p-6 shadow-xs space-y-2">
 	<div class="flex items-center justify-between">
 		<div class="flex items-center gap-3">
-			<div
-				class="size-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0"
-			>
-				<CalendarIcon class="size-5" />
-			</div>
 			<div>
 				<h2
 					class="text-base font-normal tracking-wide text-card-foreground leading-none"
 				>
 					Google Calendar
 				</h2>
-				<span class="text-[11px] text-muted-foreground">
-					Personal calendars • Dedicated 'Lasso' sync calendar
+				<span class="text-xs py-1 text-muted-foreground">
+					Personal calendars • Sync calendar to google
+				</span>
+			</div>
+		</div>
+	</div>
+	<hr />
+
+	{#if isConnected}
+		<!-- Account Header -->
+		<div
+			class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs"
+		>
+			<div>
+				<span class="text-muted-foreground">Account: </span>
+				<span class="font-medium font-mono text-foreground">
+					{authState.record?.google_email ||
+						authState.user?.email ||
+						"Google User"}
+				</span>
+			</div>
+			<div>
+				<span class="text-muted-foreground">Calendars Available: </span>
+				<span class="font-medium text-foreground">
+					{googleCalendars.length}
 				</span>
 			</div>
 		</div>
 
-		{#if isConnected}
-			<span
-				class="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400 leading-none"
-			>
-				Connected
-			</span>
-		{:else}
-			<span
-				class="inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground leading-none"
-			>
-				Not Connected
-			</span>
+		<!-- PERSONAL READ-ONLY CALENDARS LIST -->
+		{#if readOnlyCalendars.length > 0}
+			<div class="pt-2 space-y-3">
+				<div class="flex items-center justify-between">
+					<span class="text-xs font-medium text-foreground"
+						>Personal Calendars ({readOnlyCalendars.length})</span
+					>
+				</div>
+
+				<div class="space-y-2 pt-1">
+					{#each readOnlyCalendars as calendar, idx (calendar.id)}
+						{@render calendarItem(calendar, getSwatch(idx, calendar.color))}
+					{/each}
+				</div>
+			</div>
 		{/if}
-	</div>
 
-	<p class="text-xs text-muted-foreground w-full">
-		Connect Google Calendar to sync all your coursework and deadlines to a
-		dedicated
-		<strong class="text-foreground">Lasso</strong> calendar.
-	</p>
+		<!-- DEDICATED LASSO CALENDAR SYNC CARD -->
+		<div
+			class="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 rounded-lg border border-border bg-card/60 overflow-hidden transition-all duration-200"
+		>
+			<div class="flex items-start gap-3">
+				<div>
+					<div class="flex items-center gap-2 pb-1">
+						<span class="size-2.5 rounded-xs shrink-0 shadow-2xs bg-primary"
+						></span>
 
-	{#if isConnected}
-		<div class="pt-2 border-t border-border flex flex-col gap-4">
-			<!-- Account Header -->
-			<div
-				class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs"
-			>
-				<div>
-					<span class="text-muted-foreground">Account: </span>
-					<span class="font-medium font-mono text-foreground">
-						{authState.record?.google_email ||
-							authState.user?.email ||
-							"Google User"}
-					</span>
-				</div>
-				<div>
-					<span class="text-muted-foreground">Calendars Available: </span>
-					<span class="font-medium text-foreground">
-						{googleCalendars.length}
-					</span>
+						<span class="text-xs text-foreground">Lasso Calendar Sync</span>
+					</div>
+					<p class="text-xs text-muted-foreground mt-0.5 lg:w-3/4">
+						When enabled all Canvas coursework and deadlines are pushed to this
+						calendar in Google, tagged by course.
+					</p>
 				</div>
 			</div>
 
-			<!-- DEDICATED LASSO CALENDAR SYNC CARD -->
-			<div
-				class="rounded-xl border border-primary/25 bg-primary/5 p-4 space-y-3"
-			>
-				<div
-					class="flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-				>
-					<div class="flex items-start gap-3">
-						<div
-							class="size-8 rounded-md bg-primary flex items-center justify-center text-primary-foreground shrink-0 mt-0.5 shadow-xs"
-						>
-							<SparklesIcon class="size-4" />
-						</div>
-						<div>
-							<div class="flex items-center gap-2">
-								<span class="text-sm font-semibold text-foreground"
-									>Lasso Calendar</span
-								>
-								<span
-									class="inline-flex items-center rounded-full bg-primary/20 px-2 py-0.5 text-[10px] font-medium text-primary leading-none"
-								>
-									Dedicated Sync Target
-								</span>
-							</div>
-							<p class="text-xs text-muted-foreground mt-0.5">
-								All Canvas coursework and deadlines are pushed to this calendar
-								in Google, tagged by course.
-							</p>
-						</div>
-					</div>
-
-					<div class="flex items-center gap-2 shrink-0">
-						<Button
-							size="sm"
-							variant="outline"
-							class="text-xs cursor-pointer gap-1.5 shrink-0 border-destructive/30 text-destructive hover:bg-destructive/10"
-							onclick={handlePurgeLassoCalendar}
-							disabled={isPurging || syncState.isSyncingGoogleOut}
-							title="Delete all events on Lasso Google Calendar and recreate an empty calendar"
-						>
-							{#if isPurging}
-								<RefreshCwIcon class="size-3.5 animate-spin" />
-								<span>Purging...</span>
-							{:else}
-								<Trash2Icon class="size-3.5" />
-								<span>Purge Calendar</span>
-							{/if}
-						</Button>
-
-						<Button
-							size="sm"
-							class="text-xs cursor-pointer gap-1.5 shrink-0"
-							onclick={handleSyncToGoogle}
-							disabled={syncState.isSyncingGoogleOut || isPurging}
-						>
-							{#if syncState.isSyncingGoogleOut && !isPurging}
-								<RefreshCwIcon class="size-3.5 animate-spin" />
-								<span>Syncing Coursework...</span>
-							{:else}
-								<UploadCloudIcon class="size-3.5" />
-								<span>Sync Coursework to Google</span>
-							{/if}
-						</Button>
-					</div>
-				</div>
-
-				{#if dataState.googleExportFeedback}
-					<div
-						class="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-md px-3 py-2"
-						in:fade={{ duration: 150 }}
-					>
-						<CheckIcon class="size-4 shrink-0" />
-						<span>{dataState.googleExportFeedback}</span>
-					</div>
-				{/if}
-
-				{#if dataState.googleExportError}
-					<div
-						class="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2"
-						in:fade={{ duration: 150 }}
-					>
-						<AlertTriangleIcon class="size-4 shrink-0" />
-						<span>{dataState.googleExportError}</span>
-					</div>
-				{/if}
-
-				<div
-					class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-muted-foreground pt-1 border-t border-primary/10"
-				>
-					<div class="flex items-center gap-1.5">
-						<TagIcon class="size-3 text-primary" />
-						<span
-							>Event Title Format: <code
-								class="font-mono text-foreground text-[10px] px-1 py-0.5 bg-background rounded border border-border/50"
-								>[Course] Assignment Name</code
-							></span
-						>
-					</div>
-					{#if dataState.googleExportSyncedAt}
-						<span
-							>Last synced: {new Date(dataState.googleExportSyncedAt).toLocaleTimeString(
-								[],
-								{ hour: "numeric", minute: "2-digit" },
-							)}</span
-						>
-					{/if}
-				</div>
+			<div class="flex items-center gap-2.5 shrink-0 pt-2 sm:pt-0">
+				<SquareSwitch
+					id="lasso-calendar-sync-switch"
+					bind:checked={isExportEnabled}
+					label="Enabled"
+				/>
 			</div>
-
-			<!-- PERSONAL READ-ONLY CALENDARS LIST -->
-			{#if readOnlyCalendars.length > 0}
-				<div class="pt-2 space-y-3">
-					<div class="flex items-center justify-between">
-						<span class="text-xs font-medium text-foreground"
-							>Personal Calendars ({readOnlyCalendars.length})</span
-						>
-					</div>
-
-					<div class="space-y-2 pt-1">
-						{#each readOnlyCalendars as calendar, idx (calendar.id)}
-							{@render calendarItem(calendar, getSwatch(idx, calendar.color))}
-						{/each}
-					</div>
-				</div>
+		</div>
+		<hr />
+		<div
+			class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-muted-foreground pt-1"
+		>
+			{#if dataState.googleExportSyncedAt}
+				<span
+					>Last synced: {new Date(
+						dataState.googleExportSyncedAt,
+					).toLocaleTimeString([], {
+						hour: "numeric",
+						minute: "2-digit",
+					})}</span
+				>
 			{/if}
-
-			<div class="pt-2 flex justify-end">
-				<Button
-					variant="outline"
-					size="sm"
-					class="text-xs text-destructive hover:text-destructive hover:bg-destructive/10 border-border cursor-pointer"
-					onclick={() => (showDisconnectModal = true)}
-				>
-					Disconnect Google Calendar
-				</Button>
-			</div>
+			<Button
+				variant="outline"
+				size="sm"
+				class="text-xs text-destructive hover:text-destructive hover:bg-destructive/10 border-border cursor-pointer"
+				onclick={() => (showDisconnectModal = true)}
+			>
+				Disconnect Google Calendar
+			</Button>
 		</div>
 	{:else}
 		<div
