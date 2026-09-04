@@ -35,7 +35,7 @@
 	const active = $derived(isSynced || isBlue);
 
 	function formatTime(date: Date | null): string {
-		if (!date) return "Never";
+		if (!date || isNaN(date.getTime())) return "Never";
 		return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 	}
 

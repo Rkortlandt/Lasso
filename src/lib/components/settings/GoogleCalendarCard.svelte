@@ -1,10 +1,14 @@
 <script lang="ts">
-	import {
-		googleCalendarState,
-		type GoogleCalendar,
-	} from "$lib/googleCalendarState.svelte";
+	import { pb, POCKETBASE_URL } from "$lib/pocketbase";
 	import { authState } from "$lib/authState.svelte";
+	import { syncState } from "$lib/syncState.svelte";
 	import { calendarVisibilityState } from "$lib/calendarVisibilityState.svelte";
+	import { dataState } from "$lib/dataState/dataState.svelte";
+	import {
+		getGoogleCalendars,
+		resolveCalendarColor,
+	} from "$lib/dataState/calendarQueries.svelte";
+	import type { CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
 	import { Button } from "$lib/components/ui/button";
 	import CalendarIcon from "@lucide/svelte/icons/calendar";
 	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
@@ -12,8 +16,6 @@
 	import TagIcon from "@lucide/svelte/icons/tag";
 	import CheckIcon from "@lucide/svelte/icons/check";
 	import RotateCcwIcon from "@lucide/svelte/icons/rotate-ccw";
-	import GlobeIcon from "@lucide/svelte/icons/globe";
-	import ShieldIcon from "@lucide/svelte/icons/shield";
 	import AlertTriangleIcon from "@lucide/svelte/icons/alert-triangle";
 	import UploadCloudIcon from "@lucide/svelte/icons/upload-cloud";
 	import EyeIcon from "@lucide/svelte/icons/eye";
@@ -23,13 +25,19 @@
 	import { fade, slide, scale } from "svelte/transition";
 
 	let showDisconnectModal = $state(false);
-	let selectedSectionTab = $state<"all" | "my" | "subscribed">("all");
+
+	const isConnected = $derived(Boolean(authState.record?.google_connected));
+	const googleCalendars = $derived(getGoogleCalendars());
+	const readOnlyCalendars = $derived(
+		googleCalendars.filter((c) => (c.nickname || c.name).toLowerCase() !== "lasso"),
+	);
 
 	// Detail & nickname state
 	let expandedCalendarId = $state<string | null>(null);
 	let nicknameInput = $state("");
 	let isSavingNickname = $state(false);
 	let nicknameSuccessId = $state<string | null>(null);
+	let isPurging = $state(false);
 
 	const swatchColors = [
 		"#2563eb", // blue
@@ -47,23 +55,7 @@
 		return swatchColors[idx % swatchColors.length];
 	}
 
-	function formatRole(role?: string): string {
-		if (!role) return "Viewer";
-		switch (role.toLowerCase()) {
-			case "owner":
-				return "Owner";
-			case "writer":
-				return "Editor";
-			case "reader":
-				return "Viewer";
-			case "freebusyreader":
-				return "Free/Busy";
-			default:
-				return role;
-		}
-	}
-
-	function toggleExpand(calendar: GoogleCalendar) {
+	function toggleExpand(calendar: CalendarRecord) {
 		if (expandedCalendarId === calendar.id) {
 			expandedCalendarId = null;
 		} else {
@@ -77,10 +69,16 @@
 		e.preventDefault();
 		isSavingNickname = true;
 		try {
-			await googleCalendarState.updateNickname(
-				calendarId,
-				nicknameInput.trim(),
-			);
+			const trimmed = nicknameInput.trim();
+			await dataState.updateCalendar(calendarId, { nickname: trimmed });
+			await fetch(`${POCKETBASE_URL}/api/calendar/nickname`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+				body: JSON.stringify({ calendarId, nickname: trimmed }),
+			}).catch(() => {});
 			nicknameSuccessId = calendarId;
 			setTimeout(() => {
 				if (nicknameSuccessId === calendarId) nicknameSuccessId = null;
@@ -95,7 +93,15 @@
 	async function clearNickname(calendarId: string) {
 		isSavingNickname = true;
 		try {
-			await googleCalendarState.updateNickname(calendarId, "");
+			await dataState.updateCalendar(calendarId, { nickname: "" });
+			await fetch(`${POCKETBASE_URL}/api/calendar/nickname`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+				body: JSON.stringify({ calendarId, nickname: "" }),
+			}).catch(() => {});
 			nicknameInput = "";
 			nicknameSuccessId = calendarId;
 			setTimeout(() => {
@@ -110,26 +116,62 @@
 
 	async function handleConnect() {
 		try {
-			await googleCalendarState.connectWithGoogle();
+			await authState.loginWithGoogle();
+			await syncState.syncFromGoogle().catch(() => {});
+			await dataState.refresh();
 		} catch (err) {
 			console.error("Failed to connect Google Calendar:", err);
 		}
 	}
 
+	async function handleDisconnect() {
+		showDisconnectModal = false;
+		try {
+			await fetch(`${POCKETBASE_URL}/api/google/disconnect`, {
+				method: "POST",
+				headers: {
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+			}).catch(() => {});
+
+			if (pb.authStore.record?.id) {
+				await pb.collection("users").update(pb.authStore.record.id, {
+					google_connected: false,
+					google_access_token: "",
+					google_refresh_token: "",
+				});
+			}
+			await pb.collection("users").authRefresh();
+			await dataState.refresh();
+		} catch (e) {
+			console.error("Disconnect Google error:", e);
+		}
+	}
+
 	async function handleSyncToGoogle() {
 		try {
-			await googleCalendarState.syncToGoogle();
+			await syncState.syncToGoogle();
 		} catch (err) {
 			console.error("Sync to Google Calendar failed:", err);
 		}
 	}
 
-	let isPurging = $state(false);
 	async function handlePurgeLassoCalendar() {
 		if (isPurging) return;
 		isPurging = true;
 		try {
-			await googleCalendarState.purgeLassoCalendar();
+			const resp = await fetch(`${POCKETBASE_URL}/api/google/lasso/purge`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+			});
+			const data = await resp.json();
+			if (!resp.ok || !data.success) {
+				throw new Error(data.message || "Failed to purge Lasso Google calendar");
+			}
+			await dataState.refresh();
 		} catch (err) {
 			console.error("Purge Lasso Calendar failed:", err);
 		} finally {
@@ -159,7 +201,7 @@
 			</div>
 		</div>
 
-		{#if googleCalendarState.isConnected}
+		{#if isConnected}
 			<span
 				class="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400 leading-none"
 			>
@@ -180,7 +222,7 @@
 		<strong class="text-foreground">Lasso</strong> calendar.
 	</p>
 
-	{#if googleCalendarState.isConnected}
+	{#if isConnected}
 		<div class="pt-2 border-t border-border flex flex-col gap-4">
 			<!-- Account Header -->
 			<div
@@ -189,7 +231,7 @@
 				<div>
 					<span class="text-muted-foreground">Account: </span>
 					<span class="font-medium font-mono text-foreground">
-						{googleCalendarState.userEmail ||
+						{authState.record?.google_email ||
 							authState.user?.email ||
 							"Google User"}
 					</span>
@@ -197,7 +239,7 @@
 				<div>
 					<span class="text-muted-foreground">Calendars Available: </span>
 					<span class="font-medium text-foreground">
-						{googleCalendarState.validCalendars.length}
+						{googleCalendars.length}
 					</span>
 				</div>
 			</div>
@@ -239,7 +281,7 @@
 							variant="outline"
 							class="text-xs cursor-pointer gap-1.5 shrink-0 border-destructive/30 text-destructive hover:bg-destructive/10"
 							onclick={handlePurgeLassoCalendar}
-							disabled={isPurging || googleCalendarState.isSyncingToGoogle}
+							disabled={isPurging || syncState.isSyncingGoogleOut}
 							title="Delete all events on Lasso Google Calendar and recreate an empty calendar"
 						>
 							{#if isPurging}
@@ -255,9 +297,9 @@
 							size="sm"
 							class="text-xs cursor-pointer gap-1.5 shrink-0"
 							onclick={handleSyncToGoogle}
-							disabled={googleCalendarState.isSyncingToGoogle || isPurging}
+							disabled={syncState.isSyncingGoogleOut || isPurging}
 						>
-							{#if googleCalendarState.isSyncingToGoogle && !isPurging}
+							{#if syncState.isSyncingGoogleOut && !isPurging}
 								<RefreshCwIcon class="size-3.5 animate-spin" />
 								<span>Syncing Coursework...</span>
 							{:else}
@@ -268,23 +310,23 @@
 					</div>
 				</div>
 
-				{#if googleCalendarState.syncMessage}
+				{#if dataState.googleExportFeedback}
 					<div
 						class="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-md px-3 py-2"
 						in:fade={{ duration: 150 }}
 					>
 						<CheckIcon class="size-4 shrink-0" />
-						<span>{googleCalendarState.syncMessage}</span>
+						<span>{dataState.googleExportFeedback}</span>
 					</div>
 				{/if}
 
-				{#if googleCalendarState.error}
+				{#if dataState.googleExportError}
 					<div
 						class="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2"
 						in:fade={{ duration: 150 }}
 					>
 						<AlertTriangleIcon class="size-4 shrink-0" />
-						<span>{googleCalendarState.error}</span>
+						<span>{dataState.googleExportError}</span>
 					</div>
 				{/if}
 
@@ -300,9 +342,9 @@
 							></span
 						>
 					</div>
-					{#if googleCalendarState.lastSyncedToGoogle}
+					{#if dataState.googleExportSyncedAt}
 						<span
-							>Last synced: {googleCalendarState.lastSyncedToGoogle.toLocaleTimeString(
+							>Last synced: {new Date(dataState.googleExportSyncedAt).toLocaleTimeString(
 								[],
 								{ hour: "numeric", minute: "2-digit" },
 							)}</span
@@ -312,116 +354,18 @@
 			</div>
 
 			<!-- PERSONAL READ-ONLY CALENDARS LIST -->
-			{#if googleCalendarState.readOnlyCalendars.length > 0}
+			{#if readOnlyCalendars.length > 0}
 				<div class="pt-2 space-y-3">
-					<!-- Filter Header -->
-					<div
-						class="flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-					>
-						<div class="flex items-center gap-2">
-							<span class="text-xs font-medium text-foreground"
-								>Personal Calendars</span
-							>
-							<Button
-								variant="ghost"
-								size="icon"
-								class="size-6 text-muted-foreground hover:text-foreground cursor-pointer"
-								onclick={() => googleCalendarState.refresh()}
-								title="Refresh Google Calendar list"
-								disabled={googleCalendarState.isLoading}
-							>
-								<RefreshCwIcon
-									class="size-3.5 {googleCalendarState.isLoading
-										? 'animate-spin'
-										: ''}"
-								/>
-							</Button>
-						</div>
-
-						<!-- Group tabs -->
-						<div
-							class="flex flex-wrap gap-1 bg-muted/60 p-1 rounded-lg text-[11px]"
+					<div class="flex items-center justify-between">
+						<span class="text-xs font-medium text-foreground"
+							>Personal Calendars ({readOnlyCalendars.length})</span
 						>
-							<button
-								type="button"
-								class="px-2 py-0.5 rounded-md font-medium transition-colors cursor-pointer {selectedSectionTab ===
-								'all'
-									? 'bg-background text-foreground shadow-xs'
-									: 'text-muted-foreground hover:text-foreground'}"
-								onclick={() => (selectedSectionTab = "all")}
-							>
-								All ({googleCalendarState.readOnlyCalendars.length})
-							</button>
-							<button
-								type="button"
-								class="px-2 py-0.5 rounded-md font-medium transition-colors cursor-pointer {selectedSectionTab ===
-								'my'
-									? 'bg-background text-foreground shadow-xs'
-									: 'text-muted-foreground hover:text-foreground'}"
-								onclick={() => (selectedSectionTab = "my")}
-							>
-								My Calendars ({googleCalendarState.myCalendars.length})
-							</button>
-							<button
-								type="button"
-								class="px-2 py-0.5 rounded-md font-medium transition-colors cursor-pointer {selectedSectionTab ===
-								'subscribed'
-									? 'bg-background text-foreground shadow-xs'
-									: 'text-muted-foreground hover:text-foreground'}"
-								onclick={() => (selectedSectionTab = "subscribed")}
-							>
-								Subscribed ({googleCalendarState.subscribedCalendars.length})
-							</button>
-						</div>
 					</div>
 
-					<!-- Calendar groups listing with interactive expand panels -->
-					<div class="space-y-4 pt-1">
-						<!-- My Calendars (Primary & Owned/Editor) -->
-						{#if (selectedSectionTab === "all" || selectedSectionTab === "my") && googleCalendarState.myCalendars.length > 0}
-							<div class="space-y-1.5">
-								{#if selectedSectionTab === "all"}
-									<div
-										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-emerald-400 uppercase"
-									>
-										<span class="size-1.5 rounded-full bg-emerald-400"></span>
-										<span
-											>My Calendars ({googleCalendarState.myCalendars
-												.length})</span
-										>
-									</div>
-								{/if}
-								{#each googleCalendarState.myCalendars as calendar, idx}
-									{@render calendarItem(
-										calendar,
-										getSwatch(idx, calendar.backgroundColor),
-									)}
-								{/each}
-							</div>
-						{/if}
-
-						<!-- Subscribed / Reader Calendars -->
-						{#if (selectedSectionTab === "all" || selectedSectionTab === "subscribed") && googleCalendarState.subscribedCalendars.length > 0}
-							<div class="space-y-1.5">
-								{#if selectedSectionTab === "all"}
-									<div
-										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-teal-400 uppercase"
-									>
-										<span class="size-1.5 rounded-full bg-teal-400"></span>
-										<span
-											>Subscribed Calendars ({googleCalendarState
-												.subscribedCalendars.length})</span
-										>
-									</div>
-								{/if}
-								{#each googleCalendarState.subscribedCalendars as calendar, idx}
-									{@render calendarItem(
-										calendar,
-										getSwatch(idx + 4, calendar.backgroundColor),
-									)}
-								{/each}
-							</div>
-						{/if}
+					<div class="space-y-2 pt-1">
+						{#each readOnlyCalendars as calendar, idx (calendar.id)}
+							{@render calendarItem(calendar, getSwatch(idx, calendar.color))}
+						{/each}
 					</div>
 				</div>
 			{/if}
@@ -457,9 +401,9 @@
 					size="sm"
 					class="text-xs cursor-pointer gap-1.5"
 					onclick={handleConnect}
-					disabled={googleCalendarState.isLoading}
+					disabled={authState.isLoading}
 				>
-					{#if googleCalendarState.isLoading}
+					{#if authState.isLoading}
 						<RefreshCwIcon class="size-3.5 animate-spin" />
 						<span>Connecting...</span>
 					{:else}
@@ -535,10 +479,7 @@
 					variant="destructive"
 					size="sm"
 					class="text-xs cursor-pointer gap-1.5"
-					onclick={() => {
-						showDisconnectModal = false;
-						googleCalendarState.disconnect();
-					}}
+					onclick={handleDisconnect}
 				>
 					Disconnect
 				</Button>
@@ -548,12 +489,13 @@
 {/if}
 
 <!-- Reusable snippet for calendar item card with interactive details and nickname editing -->
-{#snippet calendarItem(calendar: GoogleCalendar, swatchColor: string)}
+{#snippet calendarItem(calendar: CalendarRecord, swatchColor: string)}
 	{@const isExpanded = expandedCalendarId === calendar.id}
 	{@const isHiddenInSidebar = calendarVisibilityState.isHiddenInSidebar(
 		calendar.id,
-		calendar.summary,
+		calendar.name,
 	)}
+	{@const calColor = resolveCalendarColor(calendar, swatchColor)}
 	<div
 		class="rounded-lg border border-border bg-card/60 overflow-hidden transition-all duration-200 {isExpanded
 			? 'border-primary/50 shadow-xs ring-1 ring-primary/20'
@@ -573,22 +515,15 @@
 					class="size-2.5 rounded-xs shrink-0 shadow-2xs transition-opacity {isHiddenInSidebar
 						? 'opacity-40'
 						: ''}"
-					style="background-color: {swatchColor};"
+					style="background-color: {calColor};"
 				></span>
 				<span
 					class="font-medium truncate text-xs leading-none {isHiddenInSidebar
 						? 'text-muted-foreground line-through opacity-75'
 						: 'text-foreground'}"
 				>
-					{calendar.nickname || calendar.summary}
+					{calendar.nickname || calendar.name}
 				</span>
-				{#if calendar.primary}
-					<span
-						class="inline-flex items-center rounded-xs bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary leading-none shrink-0"
-					>
-						Primary
-					</span>
-				{/if}
 			</button>
 
 			<div class="flex items-center gap-2 shrink-0">
@@ -602,7 +537,7 @@
 						e.stopPropagation();
 						calendarVisibilityState.toggleSidebarVisibility(
 							calendar.id,
-							calendar.summary,
+							calendar.name,
 						);
 					}}
 					title={isHiddenInSidebar
@@ -632,7 +567,7 @@
 			</div>
 		</div>
 
-		<!-- Expanded detail panel: timezone, role, IDs, and local nickname editor -->
+		<!-- Expanded detail panel: IDs and local nickname editor -->
 		{#if isExpanded}
 			<div
 				class="px-3 pb-3 pt-1 border-t border-border/50 bg-muted/20 space-y-3"
@@ -640,26 +575,6 @@
 			>
 				<!-- Grid of calendar metadata -->
 				<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1 text-[11px]">
-					<div class="flex flex-col gap-0.5">
-						<span class="text-muted-foreground flex items-center gap-1">
-							<GlobeIcon class="size-3" />
-							Time Zone
-						</span>
-						<span class="font-medium text-foreground truncate">
-							{calendar.timeZone || "UTC"}
-						</span>
-					</div>
-
-					<div class="flex flex-col gap-0.5">
-						<span class="text-muted-foreground flex items-center gap-1">
-							<ShieldIcon class="size-3" />
-							Access Role
-						</span>
-						<span class="font-medium text-foreground">
-							{formatRole(calendar.accessRole)}
-						</span>
-					</div>
-
 					<div class="flex flex-col gap-0.5 col-span-2 sm:col-span-1">
 						<span class="text-muted-foreground">Calendar ID</span>
 						<span
@@ -670,22 +585,14 @@
 						</span>
 					</div>
 
-					{#if calendar.original_name && calendar.original_name !== calendar.summary}
-						<div class="col-span-2 sm:col-span-3 flex flex-col gap-0.5">
-							<span class="text-muted-foreground">Original Calendar Name</span>
+					{#if calendar.calendar_id}
+						<div class="flex flex-col gap-0.5 col-span-2 sm:col-span-2">
+							<span class="text-muted-foreground">Google Calendar ID</span>
 							<span
 								class="text-muted-foreground font-mono text-[10px] truncate"
+								title={calendar.calendar_id}
 							>
-								{calendar.original_name}
-							</span>
-						</div>
-					{/if}
-
-					{#if calendar.description}
-						<div class="col-span-2 sm:col-span-3 flex flex-col gap-0.5">
-							<span class="text-muted-foreground">Description</span>
-							<span class="text-foreground text-[11px] leading-relaxed">
-								{calendar.description}
+								{calendar.calendar_id}
 							</span>
 						</div>
 					{/if}

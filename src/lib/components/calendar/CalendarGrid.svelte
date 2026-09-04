@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from "svelte";
 	import MegaphoneIcon from "@lucide/svelte/icons/megaphone";
 	import X from "@lucide/svelte/icons/x";
 	import { isToday, getLocalTimeZone, type CalendarDate, type DateValue } from "@internationalized/date";
@@ -31,6 +32,7 @@
 		getDayAnnouncements: (date: DateValue) => FormattedAnnouncement[];
 		onDropTask: (payload: any, date: CalendarDate, startHour: number, startMin: number) => void;
 		onDeleteEvent: (evt: FormattedTimedEvent) => void;
+		onSelectItem?: (item: any, type: "event" | "announcement" | "deadline", visibleColIndex: number) => void;
 	}
 
 	let {
@@ -48,9 +50,22 @@
 		getDayAnnouncements,
 		onDropTask,
 		onDeleteEvent,
+		onSelectItem,
 	}: Props = $props();
 
 	let dragHoverState = $state<DragHoverState | null>(null);
+	let scrollContainer = $state<HTMLDivElement | null>(null);
+
+	onMount(() => {
+		if (scrollContainer) {
+			// Slight delay ensures the flex layout has fully calculated its height
+			setTimeout(() => {
+				if (scrollContainer) {
+					scrollContainer.scrollTop = scrollContainer.scrollHeight;
+				}
+			}, 10);
+		}
+	});
 
 	function formatTimeFromHourMin(hour: number, min: number): string {
 		const d = new Date();
@@ -141,6 +156,7 @@
 >
 	<!-- Scrollable container inside the masked viewport (scrollbar hidden to match left and right padding) -->
 	<div
+		bind:this={scrollContainer}
 		class="h-full w-full overflow-y-auto overflow-x-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 	>
 		<div class="flex gap-3 px-4 w-full h-[140%] min-h-[750px] pt-0 pb-0">
@@ -261,7 +277,9 @@
 							<!-- Timed blocks: Google personal calendar events & Canvas task work sessions -->
 							{#each timedEvents as evt (evt.id)}
 								<div
-									class="absolute pointer-events-auto group/gev select-none cursor-pointer overflow-visible z-10 hover:z-50"
+									role="button"
+									tabindex="0"
+									class="absolute pointer-events-auto group/gev select-none cursor-pointer overflow-visible z-10 hover:z-50 text-left"
 									style="
 										left: calc({evt.leftPercent}% + 1.5px);
 										width: calc({evt.widthPercent}% - 3px);
@@ -269,6 +287,16 @@
 										height: {evt.heightPercent}%;
 										min-height: 20px;
 									"
+									onclick={(e) => {
+										e.stopPropagation();
+										onSelectItem?.(evt, "event", visibleIdx);
+									}}
+									onkeydown={(e) => {
+										if (e.key === "Enter" || e.key === " ") {
+											e.stopPropagation();
+											onSelectItem?.(evt, "event", visibleIdx);
+										}
+									}}
 								>
 									<!-- Inner event pill -->
 									<div
@@ -318,7 +346,7 @@
 
 									<!-- Hover Details Card (solid, zero transparency) -->
 									<div
-										class="absolute hidden group-hover/gev:flex flex-col gap-1.5 z-[100] p-2.5 rounded-lg bg-popover border border-border shadow-2xl text-popover-foreground text-xs min-w-[260px] max-w-[300px] animate-in fade-in zoom-in-95 duration-150 {evt.topPercent >
+										class="absolute hidden group-hover/gev:flex flex-col gap-1.5 z-[100] pointer-events-none p-2.5 rounded-lg bg-popover border border-border shadow-2xl text-popover-foreground text-xs min-w-[260px] max-w-[300px] animate-in fade-in zoom-in-95 duration-150 {evt.topPercent >
 										70
 											? 'bottom-full mb-2'
 											: 'top-full mt-2'} {visibleIdx === 0
@@ -391,7 +419,9 @@
 							<!-- Announcement lines -->
 							{#each announcements as ann (ann.id)}
 								<div
-									class="absolute pointer-events-auto group/announcement select-none flex items-center cursor-pointer z-10 hover:z-50 overflow-visible {ann.isEndOfDay
+									role="button"
+									tabindex="0"
+									class="absolute pointer-events-auto group/announcement select-none flex items-center cursor-pointer z-10 hover:z-50 overflow-visible text-left {ann.isEndOfDay
 										? 'py-2 items-end'
 										: 'py-2.5 items-center'}"
 									style="
@@ -401,6 +431,16 @@
 										? 'bottom: 0px;'
 										: `top: ${ann.topPercent}%; transform: translateY(-50%);`}
 									"
+									onclick={(e) => {
+										e.stopPropagation();
+										onSelectItem?.(ann, "announcement", visibleIdx);
+									}}
+									onkeydown={(e) => {
+										if (e.key === "Enter" || e.key === " ") {
+											e.stopPropagation();
+											onSelectItem?.(ann, "announcement", visibleIdx);
+										}
+									}}
 								>
 									<!-- Left line: thinner than deadline on sides (h-[2px] vs h-1) -->
 									<div
@@ -497,7 +537,9 @@
 							<!-- Deadline lines -->
 							{#each deadlines as dl (dl.id)}
 								<div
-									class="absolute pointer-events-auto group/deadline select-none flex cursor-pointer z-10 hover:z-50 overflow-visible {dl.isEndOfDay
+									role="button"
+									tabindex="0"
+									class="absolute pointer-events-auto group/deadline select-none flex cursor-pointer z-10 hover:z-50 overflow-visible text-left {dl.isEndOfDay
 										? 'py-2 items-end'
 										: 'py-2.5 items-center'}"
 									style="
@@ -507,6 +549,16 @@
 										? 'bottom: 0px;'
 										: `top: ${dl.topPercent}%; transform: translateY(-50%);`}
 									"
+									onclick={(e) => {
+										e.stopPropagation();
+										onSelectItem?.(dl, "deadline", visibleIdx);
+									}}
+									onkeydown={(e) => {
+										if (e.key === "Enter" || e.key === " ") {
+											e.stopPropagation();
+											onSelectItem?.(dl, "deadline", visibleIdx);
+										}
+									}}
 								>
 									<!-- Colored / Greyed Deadline Line (stable, no vertical movement on hover) -->
 									<div

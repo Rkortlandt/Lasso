@@ -16,8 +16,7 @@
 	import ChevronUp from "@lucide/svelte/icons/chevron-up";
 	import LogOutIcon from "@lucide/svelte/icons/log-out";
 	import { dayState } from "$lib/dayState.svelte";
-	import { canvasState } from "$lib/canvasState.svelte";
-	import { pb } from "$lib/pocketbase";
+	import { syncState } from "$lib/syncState.svelte";
 	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
 	import CheckIcon from "@lucide/svelte/icons/check";
 	import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -26,7 +25,6 @@
 	import Pipette from "@lucide/svelte/icons/pipette";
 	import GripVertical from "@lucide/svelte/icons/grip-vertical";
 	import { calendarVisibilityState } from "$lib/calendarVisibilityState.svelte";
-	import { googleCalendarState } from "$lib/googleCalendarState.svelte";
 	import { dragState, type DragTaskPayload } from "$lib/dragState.svelte";
 	import { fly, fade, slide } from "svelte/transition";
 
@@ -35,13 +33,23 @@
 	const GOOGLE_CALENDARS_STORAGE_KEY = "lasso_sidebar_google_calendars_open";
 	const STORAGE_COLLAPSED_KEY = "lasso_sidebar_collapsed_calendars";
 
+	import { dataState } from "$lib/dataState/dataState.svelte";
+	import {
+		getTasksByCourse,
+		parseTaskCalendarId,
+		sortTasksChronological,
+		sortTasksCompleted,
+		type TaskGroup,
+	} from "$lib/dataState/taskQueries.svelte";
+	import {
+		resolveCalendarColor,
+		getCourseworkCalendars,
+		getGoogleCalendars,
+	} from "$lib/dataState/calendarQueries.svelte";
 	import {
 		type CalendarRecord,
 		type TaskRecord,
-		getCalendarRecords,
-		getTaskRecords,
-		updateTaskRecord,
-	} from "$lib/pocketbaseActions";
+	} from "$lib/dataState/dataRecordInterfaces";
 
 	type PocketBaseCalendar = CalendarRecord;
 	type PocketBaseTask = TaskRecord;
@@ -68,16 +76,12 @@
 		new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
 	);
 
-	let calendars = $state<PocketBaseCalendar[]>([]);
-	let tasks = $state<PocketBaseTask[]>([]);
 	let collapsedCalendars = $state<Record<string, boolean>>(
 		loadCollapsedCalendars(),
 	);
 	let expandedCompleted = $state<Record<string, boolean>>({});
 	let expandedUpcoming = $state<Record<string, boolean>>({});
-	let isLoadingTasks = $state(false);
 	let isScrolled = $state(false);
-	let reloadDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	$effect(() => {
 		const interval = setInterval(() => {
@@ -89,45 +93,61 @@
 		return () => clearInterval(interval);
 	});
 
-	$effect(() => {
-		if (authState.isAuthenticated) {
-			loadPocketBaseData();
-		} else {
-			calendars = [];
-			tasks = [];
+	function parseSyncDate(dateStr?: string | null): Date | null {
+		if (!dateStr) return null;
+		const d = new Date(dateStr.replace(" ", "T"));
+		return isNaN(d.getTime()) ? null : d;
+	}
+
+	const isAnySyncing = $derived(syncState.isAnySyncing);
+
+	const isAnyConnected = $derived(
+		syncState.isCanvasConnected || syncState.isGoogleConnected,
+	);
+
+	const oldestSyncDate = $derived.by(() => {
+		const timestamps: number[] = [];
+		if (syncState.isCanvasConnected && dataState.canvasSyncedAt) {
+			const d = parseSyncDate(dataState.canvasSyncedAt);
+			if (d) timestamps.push(d.getTime());
 		}
-	});
-
-	// Re-load when canvas sync finishes
-	$effect(() => {
-		if (canvasState.lastSynced) {
-			loadPocketBaseData();
+		if (syncState.isGoogleConnected) {
+			if (dataState.googleImportSyncedAt) {
+				const d = parseSyncDate(dataState.googleImportSyncedAt);
+				if (d) timestamps.push(d.getTime());
+			}
+			if (dataState.googleExportSyncedAt) {
+				const d = parseSyncDate(dataState.googleExportSyncedAt);
+				if (d) timestamps.push(d.getTime());
+			}
 		}
+		if (timestamps.length === 0) return null;
+		return new Date(Math.min(...timestamps));
 	});
 
-	$effect(() => {
-		if (typeof window === "undefined" || !pb.authStore.isValid) return;
+	const oldestSyncTimeFormatted = $derived(
+		oldestSyncDate
+			? oldestSyncDate.toLocaleTimeString([], {
+					hour: "numeric",
+					minute: "2-digit",
+				})
+			: null,
+	);
 
-		const unsubTasks = pb
-			.collection("tasks")
-			.subscribe("*", () => {
-				debouncedLoadPocketBaseData();
-			})
-			.catch(() => () => {});
-
-		const unsubCals = pb
-			.collection("calendars")
-			.subscribe("*", () => {
-				debouncedLoadPocketBaseData();
-			})
-			.catch(() => () => {});
-
-		return () => {
-			if (reloadDebounceTimer) clearTimeout(reloadDebounceTimer);
-			unsubTasks.then((u) => u && u());
-			unsubCals.then((u) => u && u());
-		};
+	const syncTooltip = $derived.by(() => {
+		if (isAnySyncing) return "Syncing in progress...";
+		if (!isAnyConnected) return "No sync services connected";
+		if (oldestSyncTimeFormatted) {
+			return `Last sync: ${oldestSyncTimeFormatted} — Click to sync all`;
+		}
+		return "Connected — Click to sync all";
 	});
+
+	function handleFooterSyncClick() {
+		if (isAnyConnected && !isAnySyncing) {
+			syncState.syncAll().catch(() => {});
+		}
+	}
 
 	function toggleCalendar() {
 		isCalendarOpen = !isCalendarOpen;
@@ -188,45 +208,9 @@
 		}
 	}
 
-	async function loadPocketBaseData() {
-		if (!pb.authStore.isValid) {
-			calendars = [];
-			tasks = [];
-			return;
-		}
-
-		isLoadingTasks = true;
-		try {
-			const [cals, tks] = await Promise.all([
-				getCalendarRecords({ sort: "name" }).catch((e) => {
-					console.warn("Failed to fetch calendars:", e);
-					return [];
-				}),
-				getTaskRecords({ sort: "due_date", expand: "calendar" }).catch((e) => {
-					console.warn("Failed to fetch tasks:", e);
-					return [];
-				}),
-			]);
-
-			calendars = cals;
-			tasks = tks;
-		} catch (err) {
-			console.warn("Failed to load calendars/tasks for sidebar:", err);
-		} finally {
-			isLoadingTasks = false;
-		}
-	}
-
-	function debouncedLoadPocketBaseData() {
-		if (reloadDebounceTimer) clearTimeout(reloadDebounceTimer);
-		reloadDebounceTimer = setTimeout(() => {
-			loadPocketBaseData();
-		}, 250);
-	}
-
 	async function setTaskState(task: PocketBaseTask) {
 		const calId = parseTaskCalendarId(task);
-		const cal = calId ? calendars.find((c) => c.id === calId) : null;
+		const cal = calId ? dataState.calendars.find((c) => c.id === calId) : null;
 		if (
 			cal?.source === "canvas" ||
 			task.expand?.calendar?.source === "canvas"
@@ -235,19 +219,10 @@
 		}
 
 		const nextStatus = task.status === "done" ? "todo" : "done";
-		// Optimistic update
-		tasks = tasks.map((t) =>
-			t.id === task.id ? { ...t, status: nextStatus } : t,
-		);
-
 		try {
-			await updateTaskRecord(task.id, { status: nextStatus });
+			await dataState.updateTask(task.id, { status: nextStatus });
 		} catch (err) {
 			console.error("Failed to update task:", err);
-			// Rollback on failure
-			tasks = tasks.map((t) =>
-				t.id === task.id ? { ...t, status: task.status } : t,
-			);
 		}
 	}
 
@@ -289,35 +264,9 @@
 		}
 	}
 
-	function parseTaskCalendarId(task: PocketBaseTask): string | null {
-		if (task.expand?.calendar?.id) {
-			return task.expand.calendar.id;
-		}
-		let val: any =
-			task.calendar ?? task.calendar_id ?? (task as any).calendarId;
-		if (Array.isArray(val)) {
-			val = val[0];
-		}
-		if (typeof val === "object" && val !== null) {
-			val = val.id;
-		}
-		return typeof val === "string" && val.trim() !== "" ? val.trim() : null;
-	}
 
 	function getCalendarColor(cal?: PocketBaseCalendar | null): string {
-		if (!cal) return "#3b82f6";
-		if (cal.source === "canvas" || cal.course_id) {
-			const match = canvasState.courses.find(
-				(c) =>
-					(cal.course_id && String(c.id) === String(cal.course_id)) ||
-					c.name === cal.name ||
-					(c.original_name && c.original_name === cal.name),
-			);
-			if (match && (match.color || match.backgroundColor)) {
-				return (match.color || match.backgroundColor)!;
-			}
-		}
-		return cal.color || "#3b82f6";
+		return resolveCalendarColor(cal);
 	}
 
 	function handleDragStart(
@@ -354,111 +303,8 @@
 	}
 
 	// Group tasks by calendar with tasks sorted chronologically by due_date
-	const canvasCalendars = $derived.by(() => {
-		const groups: Array<{
-			calendar: PocketBaseCalendar;
-			tasks: PocketBaseTask[];
-			upcomingTasks: PocketBaseTask[];
-			completedTasks: PocketBaseTask[];
-			pendingCount: number;
-		}> = [];
+	const canvasCalendars = $derived(getTasksByCourse());
 
-		const calMap = new Map<string, PocketBaseCalendar>();
-		for (const cal of calendars) {
-			// Google calendars are displayed in the dedicated Google Calendars section below, not under Tasks by Course
-			if (cal.source === "google" || cal.calendar_id) {
-				continue;
-			}
-			const resolvedColor = getCalendarColor(cal);
-			calMap.set(cal.id, { ...cal, color: resolvedColor });
-		}
-
-		// Also harvest any calendars expanded directly on tasks
-		for (const task of tasks) {
-			if (task.expand?.calendar && !calMap.has(task.expand.calendar.id)) {
-				if (
-					task.expand.calendar.source === "google" ||
-					task.expand.calendar.calendar_id
-				) {
-					continue;
-				}
-				const resolvedColor = getCalendarColor(task.expand.calendar);
-				calMap.set(task.expand.calendar.id, { ...task.expand.calendar, color: resolvedColor });
-			}
-		}
-
-		// Group tasks by calendar ID
-		const taskMap = new Map<string, PocketBaseTask[]>();
-		const unassignedTasks: PocketBaseTask[] = [];
-
-		for (const task of tasks) {
-			const calId = parseTaskCalendarId(task);
-			if (calId && calMap.has(calId)) {
-				const list = taskMap.get(calId) || [];
-				list.push(task);
-				taskMap.set(calId, list);
-			} else {
-				unassignedTasks.push(task);
-			}
-		}
-
-		// Sort tasks chronologically by due_date
-		function sortChronologically(a: PocketBaseTask, b: PocketBaseTask) {
-			if (!a.due_date && !b.due_date) return 0;
-			if (!a.due_date) return 1;
-			if (!b.due_date) return -1;
-			return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
-		}
-
-		// Sort completed tasks descending by due_date (most recent first)
-		function sortCompleted(a: PocketBaseTask, b: PocketBaseTask) {
-			if (!a.due_date && !b.due_date) return 0;
-			if (!a.due_date) return 1;
-			if (!b.due_date) return -1;
-			return new Date(b.due_date).getTime() - new Date(a.due_date).getTime();
-		}
-
-		for (const cal of calMap.values()) {
-			const calTasks = (taskMap.get(cal.id) || []).sort(sortChronologically);
-			const upcomingTasks = calTasks.filter((t) => t.status !== "done");
-			const completedTasks = [
-				...calTasks.filter((t) => t.status === "done"),
-			].sort(sortCompleted);
-			const pendingCount = upcomingTasks.length;
-			groups.push({
-				calendar: cal,
-				tasks: calTasks,
-				upcomingTasks,
-				completedTasks,
-				pendingCount,
-			});
-		}
-
-		if (unassignedTasks.length > 0) {
-			unassignedTasks.sort(sortChronologically);
-			const unassignedUpcoming = unassignedTasks.filter(
-				(t) => t.status !== "done",
-			);
-			const unassignedCompleted = [
-				...unassignedTasks.filter((t) => t.status === "done"),
-			].sort(sortCompleted);
-			groups.push({
-				calendar: {
-					id: "unassigned",
-					name: "Other Tasks",
-					color: "#64748b",
-					source: "internal",
-					visible: true,
-				},
-				tasks: unassignedTasks,
-				upcomingTasks: unassignedUpcoming,
-				completedTasks: unassignedCompleted,
-				pendingCount: unassignedUpcoming.length,
-			});
-		}
-
-		return groups;
-	});
 
 	const visibleCanvasCalendars = $derived.by(() => {
 		return canvasCalendars.filter(
@@ -466,10 +312,12 @@
 		);
 	});
 
+	const googleCalendars = $derived(getGoogleCalendars());
+
 	const visibleGoogleCalendars = $derived.by(() => {
-		if (!googleCalendarState.isConnected) return [];
-		return googleCalendarState.readOnlyCalendars.filter(
-			(cal) => !calendarVisibilityState.isHiddenInSidebar(cal.id, cal.summary),
+		if (!authState.record?.google_connected) return [];
+		return googleCalendars.filter(
+			(cal) => !calendarVisibilityState.isHiddenInSidebar(cal.id, cal.nickname || cal.name),
 		);
 	});
 </script>
@@ -535,16 +383,8 @@
 				<button
 					type="button"
 					class="flex items-center justify-center w-full px-4 text-muted-foreground select-none hover:text-foreground transition-colors cursor-pointer"
-					title={canvasState.isConnected
-						? canvasState.isSyncing
-							? "Syncing Canvas..."
-							: "Canvas Connected — Click to sync"
-						: "Canvas not connected"}
-					onclick={() => {
-						if (canvasState.isConnected && !canvasState.isSyncing) {
-							canvasState.syncCanvas().catch(() => {});
-						}
-					}}
+					title={syncTooltip}
+					onclick={handleFooterSyncClick}
 				>
 					<!-- Left: Live Clock -->
 					<div class="flex-1 text-right pr-2">
@@ -556,11 +396,11 @@
 					</div>
 
 					<!-- Center: Sync Status Dot -->
-					{#if canvasState.isSyncing}
+					{#if isAnySyncing}
 						<RefreshCwIcon
 							class="size-2.5 animate-spin text-primary shrink-0"
 						/>
-					{:else if canvasState.isConnected}
+					{:else if isAnyConnected}
 						<span
 							class="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)] shrink-0"
 						></span>
@@ -572,12 +412,12 @@
 					<!-- Right: Last Sync Time / Status -->
 					<div class="flex-1 text-left pl-2 truncate">
 						<span class="text-[10px] text-muted-foreground/80 tabular-nums">
-							{#if canvasState.isSyncing}
+							{#if isAnySyncing}
 								syncing...
-							{:else if canvasState.lastSynced}
-								synced
-							{:else if canvasState.isConnected}
-								connected
+							{:else if oldestSyncTimeFormatted}
+								{oldestSyncTimeFormatted}
+							{:else if isAnyConnected}
+								ready
 							{:else}
 								offline
 							{/if}
@@ -645,7 +485,7 @@
 			</div>
 		{/if}
 
-		{#if isLoadingTasks && tasks.length === 0}
+		{#if dataState.loading && dataState.tasks.length === 0}
 			<div
 				class="flex items-center justify-center py-6 text-xs text-muted-foreground gap-2"
 			>
@@ -1090,14 +930,13 @@
 								>
 									<div
 										class="w-full min-w-0 flex items-center justify-between px-2.5 py-1 rounded-md text-xs font-medium text-sidebar-foreground border bg-transparent hover:bg-sidebar-accent/40 transition-colors select-none min-h-[34px]"
-										style="border-color: {gcal.backgroundColor ||
-											gcal.colorId ||
+										style="border-color: {gcal.color ||
 											'#3b82f6'};"
 									>
 										<div class="flex items-center gap-1.5 min-w-0">
 											<span
 												class="size-2 rounded-xs shrink-0 shadow-2xs"
-												style="background-color: {gcal.backgroundColor ||
+												style="background-color: {gcal.color ||
 													'#3b82f6'};"
 											></span>
 											<span
@@ -1106,7 +945,7 @@
 													? 'text-muted-foreground line-through opacity-75'
 													: ''}"
 											>
-												{gcal.nickname || gcal.summary}
+												{gcal.nickname || gcal.name}
 											</span>
 										</div>
 									</div>

@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { canvasState, type CanvasCourse } from "$lib/canvasState.svelte";
+	import { pb, POCKETBASE_URL } from "$lib/pocketbase";
+	import { authState } from "$lib/authState.svelte";
+	import { syncState } from "$lib/syncState.svelte";
 	import { Button } from "$lib/components/ui/button";
 	import BookOpenIcon from "@lucide/svelte/icons/book-open";
 	import CalendarIcon from "@lucide/svelte/icons/calendar";
@@ -8,67 +10,34 @@
 	import TagIcon from "@lucide/svelte/icons/tag";
 	import CheckIcon from "@lucide/svelte/icons/check";
 	import RotateCcwIcon from "@lucide/svelte/icons/rotate-ccw";
-	import SparklesIcon from "@lucide/svelte/icons/sparkles";
 	import AlertTriangleIcon from "@lucide/svelte/icons/alert-triangle";
 	import EyeIcon from "@lucide/svelte/icons/eye";
 	import EyeOffIcon from "@lucide/svelte/icons/eye-off";
-	import { pb } from "$lib/pocketbase";
 	import { calendarVisibilityState } from "$lib/calendarVisibilityState.svelte";
 	import { fade, slide, scale } from "svelte/transition";
+	import { dataState } from "$lib/dataState/dataState.svelte";
 	import {
-		type CalendarRecord,
-		getCalendarRecords,
-	} from "$lib/pocketbaseActions";
-
-	let pbCalendars = $state<CalendarRecord[]>([]);
-
-	async function loadPocketBaseCalendars() {
-		if (!pb.authStore.isValid) return;
-		try {
-			pbCalendars = await getCalendarRecords({ sort: "name" });
-		} catch (err) {
-			console.warn("Failed to load calendars in CanvasCard:", err);
-		}
-	}
-
-	$effect(() => {
-		if (canvasState.isConnected) {
-			loadPocketBaseCalendars();
-		}
-	});
-
-	function getCalendarForCourse(
-		course: CanvasCourse,
-	): CalendarRecord | undefined {
-		const name = (course.name || "").toLowerCase().trim();
-		const orig = (course.original_name || "").toLowerCase().trim();
-		const code = (course.course_code || "").toLowerCase().trim();
-		return pbCalendars.find((c) => {
-			const cName = (c.name || "").toLowerCase().trim();
-			const cCourseId = c.course_id ? String(c.course_id) : "";
-			return (
-				(cCourseId && cCourseId === String(course.id)) ||
-				cName === name ||
-				(orig && cName === orig) ||
-				(code && cName === code) ||
-				c.id === String(course.id)
-			);
-		});
-	}
+		getCourseworkCalendars,
+		resolveCalendarColor,
+	} from "$lib/dataState/calendarQueries.svelte";
+	import { type CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
 
 	let showConnectForm = $state(false);
 	let showDisconnectModal = $state(false);
-	let canvasUrl = $state(canvasState.canvasUrl);
-	let canvasToken = $state("");
-	let selectedSectionTab = $state<"all" | "current" | "upcoming" | "previous">(
-		"all",
+	let canvasUrl = $state(
+		authState.record?.canvas_url || "https://canvas.instructure.com",
 	);
+	let canvasToken = $state("");
+	let isLoading = $state(false);
+
+	const isConnected = $derived(Boolean(authState.record?.canvas_connected));
+	const courses = $derived(getCourseworkCalendars());
 
 	// Section detail & nickname state
-	let expandedCourseId = $state<number | string | null>(null);
+	let expandedCourseId = $state<string | null>(null);
 	let nicknameInput = $state("");
 	let isSavingNickname = $state(false);
-	let nicknameSuccessId = $state<number | string | null>(null);
+	let nicknameSuccessId = $state<string | null>(null);
 
 	const swatchColors = [
 		"#16a34a", // green
@@ -85,37 +54,30 @@
 		return swatchColors[idx % swatchColors.length];
 	}
 
-	function formatDate(dateStr?: string | null): string {
-		if (!dateStr) return "Not specified";
-		try {
-			const d = new Date(dateStr);
-			if (isNaN(d.getTime())) return "Not specified";
-			return d.toLocaleDateString(undefined, {
-				month: "short",
-				day: "numeric",
-				year: "numeric",
-			});
-		} catch (e) {
-			return "Not specified";
-		}
-	}
-
-	function toggleExpand(course: CanvasCourse) {
+	function toggleExpand(course: CalendarRecord) {
 		if (expandedCourseId === course.id) {
 			expandedCourseId = null;
 		} else {
 			expandedCourseId = course.id;
-			const cal = getCalendarForCourse(course);
-			nicknameInput = course.nickname || cal?.nickname || "";
+			nicknameInput = course.nickname || "";
 			nicknameSuccessId = null;
 		}
 	}
 
-	async function saveNickname(e: SubmitEvent, courseId: number | string) {
+	async function saveNickname(e: SubmitEvent, courseId: string) {
 		e.preventDefault();
 		isSavingNickname = true;
 		try {
-			await canvasState.updateNickname(courseId, nicknameInput.trim());
+			const trimmedNickname = nicknameInput.trim();
+			await dataState.updateCalendar(courseId, { nickname: trimmedNickname });
+			await fetch(`${POCKETBASE_URL}/api/calendar/nickname`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+				body: JSON.stringify({ courseId, nickname: trimmedNickname }),
+			}).catch(() => {});
 			nicknameSuccessId = courseId;
 			setTimeout(() => {
 				if (nicknameSuccessId === courseId) nicknameSuccessId = null;
@@ -127,10 +89,18 @@
 		}
 	}
 
-	async function clearNickname(courseId: number | string) {
+	async function clearNickname(courseId: string) {
 		isSavingNickname = true;
 		try {
-			await canvasState.updateNickname(courseId, "");
+			await dataState.updateCalendar(courseId, { nickname: "" });
+			await fetch(`${POCKETBASE_URL}/api/calendar/nickname`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+				body: JSON.stringify({ courseId, nickname: "" }),
+			}).catch(() => {});
 			nicknameInput = "";
 			nicknameSuccessId = courseId;
 			setTimeout(() => {
@@ -159,11 +129,63 @@
 		cleanUrl = cleanUrl.replace(/\/+$/, "");
 		canvasUrl = cleanUrl;
 
+		isLoading = true;
 		try {
-			await canvasState.connect(cleanUrl, canvasToken.trim());
+			if (pb.authStore.record?.id) {
+				await pb.collection("users").update(pb.authStore.record.id, {
+					canvas_url: cleanUrl,
+					canvas_token: canvasToken.trim(),
+				});
+			}
+
+			const res = await fetch(`${POCKETBASE_URL}/api/canvas/verify`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+				body: JSON.stringify({ canvasUrl: cleanUrl, canvasToken: canvasToken.trim() }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data.success) {
+				throw new Error(data.message || data.error || "Failed to verify Canvas token");
+			}
+
+			await pb.collection("users").authRefresh();
+			await syncState.syncCanvas().catch(() => {});
+			await dataState.refresh();
 			showConnectForm = false;
 			canvasToken = "";
-		} catch (err) {}
+		} catch (err: any) {
+			console.error("Canvas connect error:", err);
+		} finally {
+			isLoading = false;
+		}
+	}
+
+	async function handleDisconnect() {
+		showDisconnectModal = false;
+		try {
+			await fetch(`${POCKETBASE_URL}/api/canvas/disconnect`, {
+				method: "POST",
+				headers: {
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+			}).catch(() => {});
+
+			if (pb.authStore.record?.id) {
+				await pb.collection("users").update(pb.authStore.record.id, {
+					canvas_url: "",
+					canvas_token: "",
+					canvas_connected: false,
+					canvas_student_name: "",
+				});
+			}
+			await pb.collection("users").authRefresh();
+			await dataState.refresh();
+		} catch (err) {
+			console.error("Disconnect error:", err);
+		}
 	}
 
 	let syncAlert = $state<{ type: "success" | "error"; message: string } | null>(
@@ -173,12 +195,12 @@
 	async function handleSyncCanvas() {
 		syncAlert = null;
 		try {
-			const res = await canvasState.syncCanvas();
+			const res = await syncState.syncCanvas();
 			syncAlert = {
 				type: "success",
 				message:
-					res.message ||
-					`Successfully synced ${res.coursesSynced} courses and ${res.tasksSynced} tasks.`,
+					res?.message ||
+					`Successfully synced Canvas courses and assignments.`,
 			};
 			setTimeout(() => {
 				syncAlert = null;
@@ -210,7 +232,7 @@
 			</h2>
 		</div>
 
-		{#if !canvasState.isConnected}
+		{#if !isConnected}
 			<span
 				class="inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground leading-none"
 			>
@@ -224,7 +246,7 @@
 		Click a section to view dates or customize course nicknames.
 	</p>
 
-	{#if canvasState.isConnected}
+	{#if isConnected}
 		<div class="mt-4 pt-4 border-t border-border flex flex-col gap-4">
 			<div
 				class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs bg-muted/40 p-3 rounded-lg border border-border/50"
@@ -233,22 +255,22 @@
 					<div>
 						<span class="text-muted-foreground">Institution: </span>
 						<span class="font-medium font-mono text-foreground"
-							>{canvasState.canvasUrl}</span
+							>{authState.record?.canvas_url || "https://canvas.instructure.com"}</span
 						>
 					</div>
-					{#if canvasState.studentName}
+					{#if authState.record?.canvas_student_name}
 						<div>
 							<span class="text-muted-foreground">Student: </span>
 							<span class="font-medium text-foreground"
-								>{canvasState.studentName}</span
+								>{authState.record?.canvas_student_name}</span
 							>
 						</div>
 					{/if}
-					{#if canvasState.tasks.length > 0}
+					{#if dataState.tasks.length > 0}
 						<div>
 							<span class="text-muted-foreground">Synced Tasks: </span>
 							<span class="font-medium text-foreground"
-								>{canvasState.tasks.length} tasks</span
+								>{dataState.tasks.length} tasks</span
 							>
 						</div>
 					{/if}
@@ -279,7 +301,7 @@
 				</div>
 			{/if}
 
-			{#if canvasState.validCourses.length > 0}
+			{#if courses.length > 0}
 				<div class="pt-2">
 					<!-- Filter Header -->
 					<div
@@ -287,119 +309,16 @@
 					>
 						<div class="flex items-center gap-2">
 							<span class="text-xs text-foreground uppercase font-bold"
-								>Course Sections</span
+								>Course Sections ({courses.length})</span
 							>
-						</div>
-
-						<!-- Group tabs -->
-						<div
-							class="flex flex-wrap gap-1 bg-muted/60 p-1 rounded-lg text-[11px]"
-						>
-							<button
-								type="button"
-								class="px-2 py-0.5 rounded-md font-medium transition-colors cursor-pointer {selectedSectionTab ===
-								'all'
-									? 'bg-background text-foreground shadow-xs'
-									: 'text-muted-foreground hover:text-foreground'}"
-								onclick={() => (selectedSectionTab = "all")}
-							>
-								All ({canvasState.validCourses.length})
-							</button>
-							<button
-								type="button"
-								class="px-2 py-0.5 rounded-md font-medium transition-colors cursor-pointer {selectedSectionTab ===
-								'current'
-									? 'bg-background text-foreground shadow-xs'
-									: 'text-muted-foreground hover:text-foreground'}"
-								onclick={() => (selectedSectionTab = "current")}
-							>
-								Current ({canvasState.currentCourses.length})
-							</button>
-							<button
-								type="button"
-								class="px-2 py-0.5 rounded-md font-medium transition-colors cursor-pointer {selectedSectionTab ===
-								'upcoming'
-									? 'bg-background text-foreground shadow-xs'
-									: 'text-muted-foreground hover:text-foreground'}"
-								onclick={() => (selectedSectionTab = "upcoming")}
-							>
-								Upcoming ({canvasState.upcomingCourses.length})
-							</button>
-							<button
-								type="button"
-								class="px-2 py-0.5 rounded-md font-medium transition-colors cursor-pointer {selectedSectionTab ===
-								'previous'
-									? 'bg-background text-foreground shadow-xs'
-									: 'text-muted-foreground hover:text-foreground'}"
-								onclick={() => (selectedSectionTab = "previous")}
-							>
-								Previous ({canvasState.previousCourses.length})
-							</button>
 						</div>
 					</div>
 
 					<!-- Course groups listing with interactive expand panels -->
-					<div class="space-y-4 pt-1">
-						<!-- Current Sections -->
-						{#if (selectedSectionTab === "all" || selectedSectionTab === "current") && canvasState.currentCourses.length > 0}
-							<div class="space-y-1.5">
-								{#if selectedSectionTab === "all"}
-									<div
-										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase"
-									>
-										<span>Current ({canvasState.currentCourses.length})</span>
-									</div>
-								{/if}
-								{#each canvasState.currentCourses as course, idx}
-									{@render courseItem(course, getSwatch(idx))}
-								{/each}
-							</div>
-						{/if}
-
-						<!-- Upcoming Sections (Not Published) -->
-						{#if (selectedSectionTab === "all" || selectedSectionTab === "upcoming") && canvasState.upcomingCourses.length > 0}
-							<div class="space-y-1.5">
-								{#if selectedSectionTab === "all"}
-									<div
-										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase"
-									>
-										<span
-											>Upcoming / Unpublished ({canvasState.upcomingCourses
-												.length})</span
-										>
-									</div>
-								{/if}
-								{#each canvasState.upcomingCourses as course, idx}
-									{@render courseItem(
-										course,
-										course.color ||
-											course.backgroundColor ||
-											getSwatch(idx + 5),
-									)}
-								{/each}
-							</div>
-						{/if}
-
-						<!-- Previous Sections -->
-						{#if (selectedSectionTab === "all" || selectedSectionTab === "previous") && canvasState.previousCourses.length > 0}
-							<div class="space-y-1.5">
-								{#if selectedSectionTab === "all"}
-									<div
-										class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase"
-									>
-										<span>Previous ({canvasState.previousCourses.length})</span>
-									</div>
-								{/if}
-								{#each canvasState.previousCourses as course, idx}
-									{@render courseItem(
-										course,
-										course.color ||
-											course.backgroundColor ||
-											getSwatch(idx + 2),
-									)}
-								{/each}
-							</div>
-						{/if}
+					<div class="space-y-2 pt-2">
+						{#each courses as course, idx (course.id)}
+							{@render courseItem(course, getSwatch(idx))}
+						{/each}
 					</div>
 				</div>
 			{/if}
@@ -470,9 +389,9 @@
 						type="submit"
 						size="sm"
 						class="text-xs cursor-pointer"
-						disabled={canvasState.isLoading || !canvasToken.trim()}
+						disabled={isLoading || !canvasToken.trim()}
 					>
-						{canvasState.isLoading ? "Connecting..." : "Connect"}
+						{isLoading ? "Connecting..." : "Connect"}
 					</Button>
 				</div>
 			</div>
@@ -557,10 +476,7 @@
 					variant="destructive"
 					size="sm"
 					class="text-xs cursor-pointer gap-1.5"
-					onclick={() => {
-						showDisconnectModal = false;
-						canvasState.disconnect();
-					}}
+					onclick={handleDisconnect}
 				>
 					Disconnect
 				</Button>
@@ -570,11 +486,10 @@
 {/if}
 
 <!-- Reusable snippet for course section card with interactive details and nickname editing -->
-{#snippet courseItem(course: CanvasCourse, swatchColor: string)}
+{#snippet courseItem(course: CalendarRecord, swatchColor: string)}
 	{@const isExpanded = expandedCourseId === course.id}
-	{@const courseColor = course.color || course.backgroundColor || swatchColor}
-	{@const cal = getCalendarForCourse(course)}
-	{@const calId = cal ? cal.id : String(course.id)}
+	{@const courseColor = resolveCalendarColor(course, swatchColor)}
+	{@const calId = course.id}
 	{@const isHiddenInSidebar = calendarVisibilityState.isHiddenInSidebar(
 		calId,
 		course.name,
@@ -605,7 +520,7 @@
 						? 'text-muted-foreground line-through opacity-75'
 						: 'text-foreground'}"
 				>
-					{course.nickname || cal?.nickname || course.name}
+					{course.nickname || course.name}
 				</span>
 			</button>
 
@@ -656,43 +571,28 @@
 			>
 				<!-- Grid of section metadata -->
 				<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1 text-[11px]">
-					<div class="flex flex-col gap-0.5">
-						<span class="text-muted-foreground flex items-center gap-1">
-							<CalendarIcon class="size-3" />
-							Start Date
-						</span>
-						<span class="font-medium text-foreground">
-							{formatDate(course.start_at)}
-						</span>
-					</div>
-
-					<div class="flex flex-col gap-0.5">
-						<span class="text-muted-foreground flex items-center gap-1">
-							<CalendarIcon class="size-3" />
-							End Date
-						</span>
-						<span class="font-medium text-foreground">
-							{formatDate(course.end_at)}
-						</span>
-					</div>
-
-					<div class="flex flex-col gap-0.5">
-						<span class="text-muted-foreground">Course ID</span>
-						<span class="font-mono text-foreground font-medium">
-							#{course.id}
-						</span>
-					</div>
-
-					{#if course.original_name && course.original_name !== course.name}
-						<div class="col-span-2 sm:col-span-3 flex flex-col gap-0.5">
-							<span class="text-muted-foreground">Original Course Name</span>
-							<span
-								class="text-muted-foreground font-mono text-[10px] truncate"
-							>
-								{course.original_name}
+					{#if course.course_id}
+						<div class="flex flex-col gap-0.5">
+							<span class="text-muted-foreground">Course ID</span>
+							<span class="font-mono text-foreground font-medium">
+								#{course.course_id}
 							</span>
 						</div>
 					{/if}
+
+					<div class="flex flex-col gap-0.5">
+						<span class="text-muted-foreground">Calendar ID</span>
+						<span class="font-mono text-foreground font-medium truncate" title={course.id}>
+							{course.id}
+						</span>
+					</div>
+
+					<div class="flex flex-col gap-0.5">
+						<span class="text-muted-foreground">Original Name</span>
+						<span class="font-mono text-foreground font-medium truncate" title={course.name}>
+							{course.name}
+						</span>
+					</div>
 				</div>
 
 				<!-- Local Nickname Editor -->
@@ -733,7 +633,7 @@
 							>
 								{isSavingNickname ? "Saving..." : "Save Nickname"}
 							</Button>
-							{#if course.nickname || cal?.nickname}
+							{#if course.nickname}
 								<Button
 									type="button"
 									variant="ghost"
@@ -749,7 +649,7 @@
 							{/if}
 						</div>
 						<p class="text-[10px] text-muted-foreground">
-							Stored locally in your Lasso workspace. Customizes the course
+							Stored in your Lasso workspace. Customizes the course
 							title on your calendar and sidebar.
 						</p>
 					</form>

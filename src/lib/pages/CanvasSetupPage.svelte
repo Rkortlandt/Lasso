@@ -1,5 +1,8 @@
 <script lang="ts">
-	import { canvasState } from "$lib/canvasState.svelte";
+	import { pb, POCKETBASE_URL } from "$lib/pocketbase";
+	import { authState } from "$lib/authState.svelte";
+	import { dataState } from "$lib/dataState/dataState.svelte";
+	import { syncState } from "$lib/syncState.svelte";
 	import { Button } from "$lib/components/ui/button";
 	import BookOpenIcon from "@lucide/svelte/icons/book-open";
 	import ExternalLinkIcon from "@lucide/svelte/icons/external-link";
@@ -10,11 +13,19 @@
 	import SparklesIcon from "@lucide/svelte/icons/sparkles";
 	import { fade } from "svelte/transition";
 
+	interface Props {
+		onSkip?: () => void;
+	}
+
+	let { onSkip }: Props = $props();
+
 	let canvasUrl = $state(
-		canvasState.canvasUrl || "https://canvas.instructure.com",
+		authState.record?.canvas_url || "https://canvas.instructure.com",
 	);
 	let canvasToken = $state("");
 	let showInstructions = $state(false);
+	let isLoading = $state(false);
+	let error = $state<string | null>(null);
 
 	async function handleSubmit(e: SubmitEvent) {
 		e.preventDefault();
@@ -32,10 +43,40 @@
 		cleanUrl = cleanUrl.replace(/\/+$/, "");
 		canvasUrl = cleanUrl;
 
+		isLoading = true;
+		error = null;
+
 		try {
-			await canvasState.connect(cleanUrl, canvasToken.trim());
-		} catch (err) {
-			// error displayed via canvasState.error
+			// 1. Save canvas_url and canvas_token to user record
+			if (pb.authStore.record?.id) {
+				await pb.collection("users").update(pb.authStore.record.id, {
+					canvas_url: cleanUrl,
+					canvas_token: canvasToken.trim(),
+				});
+			}
+
+			// 2. Call verify endpoint
+			const res = await fetch(`${POCKETBASE_URL}/api/canvas/verify`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+				body: JSON.stringify({ canvasUrl: cleanUrl, canvasToken: canvasToken.trim() }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data.success) {
+				throw new Error(data.message || data.error || "Failed to verify Canvas token");
+			}
+
+			// 3. Refresh user record and run initial sync
+			await pb.collection("users").authRefresh();
+			await syncState.syncCanvas().catch(() => {});
+			await dataState.refresh();
+		} catch (err: any) {
+			error = err?.message || "Could not connect to Canvas";
+		} finally {
+			isLoading = false;
 		}
 	}
 </script>
@@ -74,14 +115,14 @@
 		</p>
 
 		<!-- Error display -->
-		{#if canvasState.error}
+		{#if error}
 			<div
 				class="mt-4 w-full rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-left flex items-start gap-2.5 text-xs text-destructive"
 			>
 				<AlertCircleIcon class="size-4 shrink-0 mt-0.5" />
 				<div>
 					<p class="font-medium">Connection Failed</p>
-					<p class="mt-0.5 opacity-90">{canvasState.error}</p>
+					<p class="mt-0.5 opacity-90">{error}</p>
 				</div>
 			</div>
 		{/if}
@@ -184,14 +225,25 @@
 				<Button
 					type="submit"
 					class="w-full h-10 font-medium cursor-pointer transition-all"
-					disabled={canvasState.isLoading || !canvasToken.trim()}
+					disabled={isLoading || !canvasToken.trim()}
 				>
 					<span
-						>{canvasState.isLoading
+						>{isLoading
 							? "Verifying with Canvas..."
 							: "Connect Canvas Account"}</span
 					>
 				</Button>
+
+				{#if onSkip}
+					<Button
+						type="button"
+						variant="ghost"
+						class="w-full text-xs text-muted-foreground hover:text-foreground cursor-pointer"
+						onclick={onSkip}
+					>
+						Skip for now
+					</Button>
+				{/if}
 			</div>
 		</form>
 	</div>

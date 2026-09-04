@@ -13,6 +13,7 @@
 		isSyncing: boolean;
 		getAllDayEventsForDate: (date: DateValue) => DayAllDayEvent[];
 		onSync: () => void;
+		onSelectEvent?: (title: string, visibleColIndex: number) => void;
 	}
 
 	let {
@@ -24,6 +25,7 @@
 		isSyncing,
 		getAllDayEventsForDate,
 		onSync,
+		onSelectEvent,
 	}: Props = $props();
 </script>
 
@@ -49,7 +51,7 @@
 				? 'transition: transform 370ms cubic-bezier(0.16, 1, 0.3, 1);'
 				: 'transition: none;'}"
 		>
-			{#each days as item (item.date.toString())}
+			{#each days as item, index (item.date.toString())}
 				{@const dayEvents = getAllDayEventsForDate(item.date)}
 				<div
 					style="flex: 0 0 calc(100% / {totalCount});"
@@ -57,19 +59,24 @@
 				>
 					{#each dayEvents as evt (evt.id)}
 						<div class="h-1/2 w-full shrink-0 px-1 py-[1px] box-border">
-							<div
+							<button
+								type="button"
 								class="h-full w-full rounded-full px-2 flex items-center justify-start gap-1 truncate text-[9px] font-medium border select-none cursor-pointer transition-all shadow-2xs"
 								style="
 									background-color: {evt.color || '#3b82f6'};
 									border-color: {evt.color || '#3b82f6'};
 								"
 								title={evt.title}
+								onclick={(e) => {
+									e.stopPropagation();
+									onSelectEvent?.(evt.title, index);
+								}}
 							>
 								<span
 									class="truncate leading-none text-white drop-shadow-xs"
 									style="font-weight: 600;">{evt.title}</span
 								>
-							</div>
+							</button>
 						</div>
 					{/each}
 				</div>

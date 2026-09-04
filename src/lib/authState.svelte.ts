@@ -64,11 +64,6 @@ class AuthState {
 			});
 			this.isValid = pb.authStore.isValid;
 			this.record = pb.authStore.record;
-			if (authData?.meta?.accessToken) {
-				import('./googleCalendarState.svelte').then(({ googleCalendarState }) => {
-					googleCalendarState.initFromAuth(authData);
-				});
-			}
 			return authData;
 		} catch (err: any) {
 			console.error('Google OAuth error:', err);

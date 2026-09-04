@@ -685,13 +685,17 @@ func handlePurgeLassoCalendar(app core.App) func(e *core.RequestEvent) error {
 // tagging each event by course with title prefix [Course], description metadata, and color.
 func syncLassoToGoogle(app core.App) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
+		startTime := time.Now()
 		authRecord, err := getAuth(app, e)
 		if err != nil {
 			return err
 		}
 
+		_ = updateSyncStatusRunning(app, authRecord.Id, SyncOpGoogleExport)
+
 		lassoCalID, err := ensureLassoGoogleCalendar(app, authRecord)
 		if err != nil {
+			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpGoogleExport, "error", "", err.Error(), time.Since(startTime).Milliseconds())
 			return e.BadRequestError("Failed to setup Lasso Google calendar: "+err.Error(), err)
 		}
 
@@ -1121,6 +1125,16 @@ func syncLassoToGoogle(app core.App) func(e *core.RequestEvent) error {
 			)
 		}
 
+		_ = updateSyncStatusFinished(
+			app,
+			authRecord.Id,
+			SyncOpGoogleExport,
+			"success",
+			msg,
+			"",
+			time.Since(startTime).Milliseconds(),
+		)
+
 		return e.JSON(http.StatusOK, GoogleSyncResponse{
 			Success:       true,
 			CalendarID:    lassoCalID,
@@ -1229,6 +1243,11 @@ func fetchReadOnlyGoogleEvents(app core.App) func(e *core.RequestEvent) error {
 					continue
 				}
 
+				// Skip Lasso-managed events to prevent echoing our own exported items
+				if itm.ExtendedProperties != nil && itm.ExtendedProperties.Private["lasso_managed"] == "true" {
+					continue
+				}
+
 				startVal := itm.Start.DateTime
 				allDay := false
 				if startVal == "" {
@@ -1294,15 +1313,21 @@ type InboundSyncResponse struct {
 // syncInboundGoogleCalendars handles the POST /api/google/sync-inbound endpoint
 func syncInboundGoogleCalendars(app core.App) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
+		startTime := time.Now()
 		authRecord, err := getAuth(app, e)
 		if err != nil {
 			return err
 		}
 
+		_ = updateSyncStatusRunning(app, authRecord.Id, SyncOpGoogleImport)
+
 		res, err := runInboundGoogleSync(app, authRecord)
 		if err != nil {
+			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpGoogleImport, "error", "", err.Error(), time.Since(startTime).Milliseconds())
 			return e.BadRequestError(fmt.Sprintf("Failed to sync from Google Calendar: %v", err), nil)
 		}
+
+		_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpGoogleImport, "success", res.Message, "", time.Since(startTime).Milliseconds())
 
 		return e.JSON(http.StatusOK, res)
 	}

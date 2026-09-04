@@ -396,23 +396,30 @@ func upsertTaskRecord(app core.App, tasksCollection *core.Collection, userID str
 
 func canvasSync(app core.App) func(event *core.RequestEvent) error {
 	return func(event *core.RequestEvent) error {
+		startTime := time.Now()
 		authRecord, err := getAuth(app, event)
 		if err != nil {
 			return err
 		}
 
+		// Set running status on sync_status
+		_ = updateSyncStatusRunning(app, authRecord.Id, SyncOpCanvas)
+
 		canvasURL, apiToken, err := getCanvasAuth(authRecord, event)
 		if err != nil {
+			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
 			return err
 		}
 
 		httpClient := &http.Client{Timeout: 10 * time.Second}
 		if err := verifyCanvasAuth(httpClient, canvasURL, apiToken, event); err != nil {
+			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
 			return err
 		}
 
 		rawCourses, err := fetchCanvasCourses(httpClient, canvasURL, apiToken)
 		if err != nil {
+			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
 			return err
 		}
 
@@ -698,11 +705,22 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 			}
 		}
 
+		feedbackMsg := fmt.Sprintf("Synced %d courses and %d tasks from Canvas.", syncedCourseCount, upsertedTaskCount)
+		_ = updateSyncStatusFinished(
+			app,
+			authRecord.Id,
+			SyncOpCanvas,
+			"success",
+			feedbackMsg,
+			"",
+			time.Since(startTime).Milliseconds(),
+		)
+
 		return event.JSON(http.StatusOK, CanvasSyncResponse{
 			Success:       true,
 			CoursesSynced: syncedCourseCount,
 			TasksSynced:   upsertedTaskCount,
-			Message:       fmt.Sprintf("Successfully synced %d courses and %d tasks from Canvas.", syncedCourseCount, upsertedTaskCount),
+			Message:       feedbackMsg,
 		})
 	}
 }

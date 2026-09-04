@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { canvasState } from "$lib/canvasState.svelte";
-	import { googleCalendarState } from "$lib/googleCalendarState.svelte";
+	import { dataState } from "$lib/dataState/dataState.svelte";
 	import { syncState } from "$lib/syncState.svelte";
 	import { Button } from "$lib/components/ui/button";
 	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
@@ -13,18 +12,27 @@
 	import { fade } from "svelte/transition";
 
 	const isCanvasActive = $derived(
-		syncState.canvasSynced ||
-			(canvasState.isConnected && canvasState.lastSynced !== null),
+		Boolean(dataState.canvasSyncedAt) || syncState.canvasSynced,
 	);
 	const isGoogleInActive = $derived(
-		syncState.googleInSynced ||
-			(googleCalendarState.isConnected &&
-				googleCalendarState.lastSyncedFromGoogle !== null),
+		Boolean(dataState.googleImportSyncedAt) || syncState.googleInSynced,
 	);
 	const isGoogleOutActive = $derived(
-		syncState.googleOutSynced ||
-			(googleCalendarState.isConnected &&
-				googleCalendarState.lastSyncedToGoogle !== null),
+		Boolean(dataState.googleExportSyncedAt) || syncState.googleOutSynced,
+	);
+
+	function parseSyncDate(dateStr?: string | null): Date | null {
+		if (!dateStr) return null;
+		const d = new Date(dateStr.replace(" ", "T"));
+		return isNaN(d.getTime()) ? null : d;
+	}
+
+	const canvasLastSynced = $derived(parseSyncDate(dataState.canvasSyncedAt));
+	const googleImportLastSynced = $derived(
+		parseSyncDate(dataState.googleImportSyncedAt),
+	);
+	const googleExportLastSynced = $derived(
+		parseSyncDate(dataState.googleExportSyncedAt),
 	);
 
 	// Dotted trail fill percentages (0 to 100)
@@ -34,7 +42,7 @@
 	const isAnySyncing = $derived(syncState.isAnySyncing);
 
 	function formatTime(date: Date | null): string {
-		if (!date) return "Never";
+		if (!date || isNaN(date.getTime())) return "Never";
 		return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 	}
 
@@ -153,8 +161,8 @@
 				size="sm"
 				class="text-xs h-7 px-3 cursor-pointer gap-1.5 shrink-0 bg-primary text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
 				onclick={handleSyncAll}
-				disabled={(!canvasState.isConnected &&
-					!googleCalendarState.isConnected) ||
+				disabled={(!syncState.isCanvasConnected &&
+					!syncState.isGoogleConnected) ||
 					isAnySyncing}
 				title="Run full pipeline sync"
 			>
@@ -194,10 +202,10 @@
 				description="Import coursework"
 				icon={GraduationCapIcon}
 				isSynced={isCanvasActive}
-				isSyncing={canvasState.isSyncing || syncState.syncingStep === "canvas"}
+				isSyncing={dataState.isCanvasSyncing || syncState.isSyncingCanvas || syncState.syncingStep === "canvas"}
 				syncingLabel="Syncing"
-				isConnected={canvasState.isConnected}
-				lastSynced={canvasState.lastSynced}
+				isConnected={syncState.isCanvasConnected}
+				lastSynced={canvasLastSynced}
 				disabled={isAnySyncing}
 				onclick={handleSyncCanvas}
 			/>
@@ -224,11 +232,11 @@
 				description="Fetch calendars"
 				icon={CalendarIcon}
 				isSynced={isGoogleInActive}
-				isSyncing={googleCalendarState.isSyncingFromGoogle ||
+				isSyncing={dataState.isGoogleImporting || syncState.isSyncingGoogleIn ||
 					syncState.syncingStep === "google-in"}
 				syncingLabel="Fetching"
-				isConnected={googleCalendarState.isConnected}
-				lastSynced={googleCalendarState.lastSyncedFromGoogle}
+				isConnected={syncState.isGoogleConnected}
+				lastSynced={googleImportLastSynced}
 				disabled={isAnySyncing}
 				onclick={handleSyncFromGoogle}
 			/>
@@ -255,11 +263,11 @@
 				description="Push tasks"
 				icon={UploadCloudIcon}
 				isSynced={isGoogleOutActive}
-				isSyncing={googleCalendarState.isSyncingToGoogle ||
+				isSyncing={dataState.isGoogleExporting || syncState.isSyncingGoogleOut ||
 					syncState.syncingStep === "google-out"}
 				syncingLabel="Pushing"
-				isConnected={googleCalendarState.isConnected}
-				lastSynced={googleCalendarState.lastSyncedToGoogle}
+				isConnected={syncState.isGoogleConnected}
+				lastSynced={googleExportLastSynced}
 				disabled={isAnySyncing}
 				onclick={handleSyncToGoogle}
 			/>

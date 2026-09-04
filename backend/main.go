@@ -308,6 +308,7 @@ func main() {
 		se.Router.POST("/api/sync/canvas", canvasSync(app))
 		se.Router.POST("/api/canvas/disconnect", disconnectCanvas(app))
 		se.Router.GET("/api/canvas/nicknames", retriveCanvasNicknames(app))
+		se.Router.POST("/api/canvas/item", getCanvasItemDetails(app))
 
 		// Google Calendar endpoints
 		se.Router.POST("/api/google/calendars", handleGoogleCalendars(app))

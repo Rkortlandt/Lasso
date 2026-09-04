@@ -2,13 +2,17 @@
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import { pageState } from '$lib/pageSystem.svelte';
 	import { authState } from '$lib/authState.svelte';
-	import { canvasState } from '$lib/canvasState.svelte';
 	import HeroPage from '$lib/pages/HeroPage.svelte';
 	import SettingsPage from '$lib/pages/SettingsPage.svelte';
 	import LoginPage from '$lib/pages/LoginPage.svelte';
 	import CanvasSetupPage from '$lib/pages/CanvasSetupPage.svelte';
 	import { themeState } from '$lib/themeState.svelte';
 	import { fade } from 'svelte/transition';
+
+	let canvasSkipped = $state(false);
+	const needsCanvasSetup = $derived(
+		authState.isAuthenticated && !authState.record?.canvas_connected && !canvasSkipped
+	);
 </script>
 
 <div class="flex h-screen w-full overflow-hidden bg-background text-foreground">
@@ -24,10 +28,10 @@
 			</div>
 		{:else if pageState.current === 'settings'}
 			<SettingsPage />
-		{:else if canvasState.needsSetup}
+		{:else if needsCanvasSetup}
 			<!-- Canvas integration setup required right after Google login -->
 			<div class="absolute inset-0 flex flex-col" in:fade={{ duration: 250 }} out:fade={{ duration: 150 }}>
-				<CanvasSetupPage />
+				<CanvasSetupPage onSkip={() => (canvasSkipped = true)} />
 			</div>
 		{:else if pageState.current === 'hero'}
 			<div class="absolute inset-0 flex flex-col" in:fade={{ duration: 250, delay: 100 }} out:fade={{ duration: 150 }}>

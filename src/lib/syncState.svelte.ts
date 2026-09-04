@@ -1,5 +1,6 @@
-import { canvasState } from "$lib/canvasState.svelte";
-import { googleCalendarState } from "$lib/googleCalendarState.svelte";
+import { pb, POCKETBASE_URL } from "./pocketbase";
+import { authState } from "$lib/authState.svelte";
+import { dataState } from "$lib/dataState/dataState.svelte";
 
 export type SyncStep = "canvas" | "google-in" | "google-out" | null;
 
@@ -26,65 +27,146 @@ class SyncState {
 	googleInSynced = $state(false);
 	googleOutSynced = $state(false);
 
+	isSyncingCanvas = $state(false);
+	isSyncingGoogleIn = $state(false);
+	isSyncingGoogleOut = $state(false);
+
 	// Global isAnySyncing helper across all services
 	isAnySyncing = $derived(
 		this.isSyncingAll ||
-			canvasState.isSyncing ||
-			googleCalendarState.isSyncingFromGoogle ||
-			googleCalendarState.isSyncingToGoogle,
+			this.isSyncingCanvas ||
+			this.isSyncingGoogleIn ||
+			this.isSyncingGoogleOut ||
+			dataState.isCanvasSyncing ||
+			dataState.isGoogleImporting ||
+			dataState.isGoogleExporting,
 	);
 
-	async syncCanvas(): Promise<void> {
-		if (!canvasState.isConnected) {
-			this.syncAllError =
+	get isCanvasConnected(): boolean {
+		return Boolean(authState.record?.canvas_connected);
+	}
+
+	get isGoogleConnected(): boolean {
+		return Boolean(authState.record?.google_connected);
+	}
+
+	async syncCanvas(fromSyncAll = false): Promise<any> {
+		if (!this.isCanvasConnected) {
+			const err =
 				"Canvas LMS is not connected. Configure Canvas in settings.";
+			this.syncAllError = err;
 			return;
 		}
-		if (this.isAnySyncing) return;
+		if (this.isSyncingCanvas || dataState.isCanvasSyncing || (!fromSyncAll && this.isSyncingAll)) return;
 		this.syncAllError = null;
+		this.isSyncingCanvas = true;
 		this.canvasSynced = true;
+
 		try {
-			await canvasState.syncCanvas();
+			const canvasUrl =
+				authState.record?.canvas_url || "https://canvas.instructure.com";
+			const res = await fetch(`${POCKETBASE_URL}/api/sync/canvas`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+				body: JSON.stringify({ canvasUrl }),
+			});
+			const data = await res.json();
+			if (!res.ok || !data.success) {
+				throw new Error(
+					data.message ||
+						data.error ||
+						`Canvas sync failed (HTTP ${res.status})`,
+				);
+			}
+			await dataState.refresh();
+			return data;
 		} catch (e: any) {
 			console.error("Canvas sync failed:", e);
 			this.syncAllError = `Canvas sync failed: ${e.message || "Unknown error"}`;
 			throw e;
+		} finally {
+			this.isSyncingCanvas = false;
 		}
 	}
 
-	async syncFromGoogle(): Promise<void> {
-		if (!googleCalendarState.isConnected) {
-			this.syncAllError =
+	async syncFromGoogle(fromSyncAll = false): Promise<any> {
+		if (!this.isGoogleConnected) {
+			const err =
 				"Google Calendar is not connected. Sign in to Google in settings.";
+			this.syncAllError = err;
 			return;
 		}
-		if (this.isAnySyncing) return;
+		if (this.isSyncingGoogleIn || dataState.isGoogleImporting || (!fromSyncAll && this.isSyncingAll)) return;
 		this.syncAllError = null;
+		this.isSyncingGoogleIn = true;
 		this.googleInSynced = true;
+
 		try {
-			await googleCalendarState.syncFromGoogle();
+			const res = await fetch(`${POCKETBASE_URL}/api/google/sync-inbound`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+			});
+			const data = await res.json();
+			if (!res.ok || !data.success) {
+				throw new Error(
+					data.message ||
+						data.error ||
+						`Google Inbound sync failed (HTTP ${res.status})`,
+				);
+			}
+			await dataState.refresh();
+			return data;
 		} catch (e: any) {
 			console.error("Google Inbound sync failed:", e);
 			this.syncAllError = `Google Inbound sync failed: ${e.message || "Unknown error"}`;
 			throw e;
+		} finally {
+			this.isSyncingGoogleIn = false;
 		}
 	}
 
-	async syncToGoogle(): Promise<void> {
-		if (!googleCalendarState.isConnected) {
-			this.syncAllError =
+	async syncToGoogle(fromSyncAll = false): Promise<any> {
+		if (!this.isGoogleConnected) {
+			const err =
 				"Google Calendar is not connected. Sign in to Google in settings.";
+			this.syncAllError = err;
 			return;
 		}
-		if (this.isAnySyncing) return;
+		if (this.isSyncingGoogleOut || dataState.isGoogleExporting || (!fromSyncAll && this.isSyncingAll)) return;
 		this.syncAllError = null;
+		this.isSyncingGoogleOut = true;
 		this.googleOutSynced = true;
+
 		try {
-			await googleCalendarState.syncToGoogle();
+			const res = await fetch(`${POCKETBASE_URL}/api/google/sync`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: pb.authStore.token ? `Bearer ${pb.authStore.token}` : "",
+				},
+			});
+			const data = await res.json();
+			if (!res.ok || !data.success) {
+				throw new Error(
+					data.message ||
+						data.error ||
+						`Google Outbound sync failed (HTTP ${res.status})`,
+				);
+			}
+			await dataState.refresh();
+			return data;
 		} catch (e: any) {
 			console.error("Google Outbound sync failed:", e);
 			this.syncAllError = `Google Outbound sync failed: ${e.message || "Unknown error"}`;
 			throw e;
+		} finally {
+			this.isSyncingGoogleOut = false;
 		}
 	}
 
@@ -99,7 +181,7 @@ class SyncState {
 			};
 		}
 
-		if (!canvasState.isConnected && !googleCalendarState.isConnected) {
+		if (!this.isCanvasConnected && !this.isGoogleConnected) {
 			const err =
 				"No services connected. Please connect Canvas LMS or Google Calendar.";
 			this.syncAllError = err;
@@ -121,12 +203,12 @@ class SyncState {
 
 		try {
 			// Step 1: Canvas LMS (if connected)
-			if (canvasState.isConnected) {
+			if (this.isCanvasConnected) {
 				this.syncingStep = "canvas";
 				this.canvasSynced = true;
 				if (options?.onStepChange) await options.onStepChange("canvas");
 				try {
-					const cRes = await canvasState.syncCanvas();
+					const cRes = await this.syncCanvas(true);
 					results.push(`Canvas (${cRes?.tasksSynced ?? "all"} tasks)`);
 				} catch (e: any) {
 					errors.push(`Canvas: ${e.message || "failed"}`);
@@ -137,14 +219,14 @@ class SyncState {
 			if (options?.onStepChange) await options.onStepChange(null);
 
 			// Step 2: Google Inbound (if connected)
-			if (googleCalendarState.isConnected) {
+			if (this.isGoogleConnected) {
 				this.syncingStep = "google-in";
 				this.googleInSynced = true;
 				if (options?.onStepChange) await options.onStepChange("google-in");
 				try {
-					const gFromRes = await googleCalendarState.syncFromGoogle();
+					const gFromRes = await this.syncFromGoogle(true);
 					results.push(
-						`Google In (${gFromRes?.calendarCount ?? 0} cals, ${gFromRes?.eventCount ?? 0} events)`,
+						`Google In (${gFromRes?.calendarsSynced ?? gFromRes?.calendarCount ?? 0} cals, ${gFromRes?.eventsSynced ?? gFromRes?.eventCount ?? 0} events)`,
 					);
 				} catch (e: any) {
 					errors.push(`Google Inbound: ${e.message || "failed"}`);
@@ -155,12 +237,12 @@ class SyncState {
 			if (options?.onStepChange) await options.onStepChange(null);
 
 			// Step 3: Google Outbound (if connected)
-			if (googleCalendarState.isConnected) {
+			if (this.isGoogleConnected) {
 				this.syncingStep = "google-out";
 				this.googleOutSynced = true;
 				if (options?.onStepChange) await options.onStepChange("google-out");
 				try {
-					const gToRes = await googleCalendarState.syncToGoogle();
+					const gToRes = await this.syncToGoogle(true);
 					results.push(`Google Out (${gToRes?.syncedCount ?? 0} pushed)`);
 				} catch (e: any) {
 					errors.push(`Google Outbound: ${e.message || "failed"}`);

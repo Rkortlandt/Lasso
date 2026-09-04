@@ -250,13 +250,20 @@ class DataState {
 			const syncSubRef = await pb.collection("sync_status").subscribe("*", (event) => {
 				if (event.action === "create" || event.action === "update") {
 					const record = event.record as unknown as SyncStatusRecord;
+					const prevCanvasSync = this._syncStatus?.canvas_synced_at;
+					const prevGoogleImportSync = this._syncStatus?.google_import_synced_at;
+					const prevGoogleExportSync = this._syncStatus?.google_export_synced_at;
+
 					this._syncStatus = record;
 
 					// If a sync operation just completed, refresh data cleanly
 					if (
 						record.canvas_status === "success" ||
 						record.google_import_status === "success" ||
-						record.google_export_status === "success"
+						record.google_export_status === "success" ||
+						(record.canvas_synced_at && record.canvas_synced_at !== prevCanvasSync) ||
+						(record.google_import_synced_at && record.google_import_synced_at !== prevGoogleImportSync) ||
+						(record.google_export_synced_at && record.google_export_synced_at !== prevGoogleExportSync)
 					) {
 						this.refresh();
 					}
