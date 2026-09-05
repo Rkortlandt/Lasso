@@ -7,6 +7,7 @@
 	import { dragState, type DragTaskPayload } from "$lib/dragState.svelte";
 	import { parseTaskCalendarId } from "$lib/dataState/taskQueries.svelte";
 	import { resolveCalendarColor } from "$lib/dataState/calendarQueries.svelte";
+	import { pageState } from "$lib/pageSystem.svelte";
 	import type {
 		CalendarRecord,
 		TaskRecord,
@@ -142,20 +143,25 @@
 	}
 
 	const formattedDue = $derived(formatDueDate(task.due_date));
+	const isSettings = $derived(pageState.current === "settings");
 </script>
 
 <div
 	role="group"
 	aria-label={task.name}
-	class="group/task flex rounded-md items-stretch hover:bg-sidebar-accent/50 transition-colors text-xs select-none overflow-hidden cursor-grab active:cursor-grabbing"
-	draggable="true"
-	ondragstart={handleDragStart}
-	ondragend={handleDragEnd}
+	class="group/task flex rounded-md items-stretch hover:bg-sidebar-accent/50 transition-colors text-xs select-none overflow-hidden {isSettings
+		? ''
+		: 'cursor-grab active:cursor-grabbing'}"
+	draggable={!isSettings}
+	ondragstart={isSettings ? undefined : handleDragStart}
+	ondragend={isSettings ? undefined : handleDragEnd}
 >
-	<!-- Left section: Drag handle -->
+	<!-- Left section: Drag handle (hidden in settings, exact space preserved) -->
 	<div
-		class="flex items-center justify-center px-.5 cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-foreground transition-colors shrink-0 select-none opacity-0 group-hover/task:opacity-100"
-		title="Drag onto calendar"
+		class="flex items-center justify-center px-.5 text-muted-foreground/40 shrink-0 select-none {isSettings
+			? 'invisible pointer-events-none'
+			: 'cursor-grab active:cursor-grabbing hover:text-foreground transition-colors opacity-0 group-hover/task:opacity-100'}"
+		title={isSettings ? undefined : "Drag onto calendar"}
 	>
 		<GripVertical class="size-2.5" />
 	</div>

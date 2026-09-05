@@ -317,8 +317,6 @@ func handleGoogleCalendars(app core.App) func(e *core.RequestEvent) error {
 
 			if nick, ok := localNicknames[cid]; ok && nick != "" {
 				entry["nickname"] = nick
-				entry["original_name"] = summary
-				entry["summary"] = nick
 			}
 
 			// Sync color to PocketBase calendar record if it exists

@@ -59,7 +59,7 @@ type CanvasVerifyResponse struct {
 	StudentID   int              `json:"studentId"`
 	AvatarURL   string           `json:"avatarUrl"`
 	CourseCount int              `json:"courseCount"`
-	Courses     []map[string]any `json:"courses"`
+	Courses     []CanvasCourse `json:"courses"`
 }
 
 type CanvasSyncResponse struct {

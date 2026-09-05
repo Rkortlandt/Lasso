@@ -1,23 +1,30 @@
 package main
 
 import (
+	"backend/proxies"
 	"encoding/json"
 	"fmt"
-	"github.com/pocketbase/pocketbase/core"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
 )
 
 func getCanvasAuth(authRecord *core.Record, event *core.RequestEvent) (string, string, error) {
-	url := authRecord.GetString("canvas_url")
+	if authRecord == nil {
+		return "", "", event.BadRequestError("Authentication required", nil)
+	}
+	user := proxies.NewUser(authRecord)
+	url := user.CanvasURL()
 	if url == "" {
 		return "", "", event.BadRequestError("No Canvas URL on Auth Record", nil)
 	}
-	token := authRecord.GetString("canvas_token")
+	token := user.CanvasToken()
 	if token == "" {
 		return "", "", event.BadRequestError("No Canvas TOKEN on Auth Record, check your canvas is connected", nil)
 	}
@@ -72,32 +79,7 @@ func handleCanvasVerify(app core.App) func(event *core.RequestEvent) error {
 			return event.BadRequestError(fmt.Sprintf("Failed to fetch Canvas user profile: %v", err), nil)
 		}
 
-		localNicknames := map[string]string{}
-		if authRecord != nil {
-			calRecords, err := app.FindRecordsByFilter(
-				"calendars",
-				"user = {:user} && nickname != ''",
-				"",
-				200,
-				0,
-				map[string]any{"user": authRecord.Id},
-			)
-			if err == nil {
-				for _, r := range calRecords {
-					nick := r.GetString("nickname")
-					if nick != "" {
-						if cid := r.GetString("course_id"); cid != "" {
-							localNicknames[cid] = nick
-							localNicknames[normalizeIDString(cid)] = nick
-						}
-						localNicknames[r.GetString("name")] = nick
-						localNicknames[r.Id] = nick
-					}
-				}
-			}
-		}
-
-		rawCourses, err := fetchCanvasCourses(httpClient, url, token)
+		canvasCoursesData, err := fetchCanvasCourses(httpClient, url, token)
 		if err != nil {
 			return err
 		}
@@ -107,103 +89,36 @@ func handleCanvasVerify(app core.App) func(event *core.RequestEvent) error {
 			canvasColors = map[string]string{}
 		}
 
-		// Clean and tag each course with accurate status, real color, and local nicknames
-		var courses []map[string]any
-		for _, rc := range rawCourses {
-			if restricted, ok := rc["access_restricted_by_date"].(bool); ok && restricted {
-				continue
-			}
-			name, _ := rc["name"].(string)
-			if strings.TrimSpace(name) == "" {
+		// Tag each course with real color
+		var courses []CanvasCourse
+		for _, course := range canvasCoursesData {
+			if course.AccessRestrictedByDate || course.WorkflowState == "deleted" || course.Name == "" {
 				continue
 			}
 
-			wfState := strings.ToLower(fmt.Sprintf("%v", rc["workflow_state"]))
-			if wfState == "deleted" {
-				continue
+			courseId := course.CourseID()
+			if color, ok := canvasColors["course_"+courseId]; ok && color != "" {
+				course.Color = color
+				course.BackgroundColor = color
+			} else if color, ok := canvasColors[courseId]; ok && color != "" {
+				course.Color = color
+				course.BackgroundColor = color
 			}
 
-			now := time.Now()
-			isEnded := false
-			if endAtStr, ok := rc["end_at"].(string); ok && strings.TrimSpace(endAtStr) != "" {
-				if t, err := time.Parse(time.RFC3339, endAtStr); err == nil && t.Before(now) {
-					isEnded = true
-				}
-			}
-			if !isEnded {
-				if termMap, ok := rc["term"].(map[string]any); ok {
-					if termEnd, ok := termMap["end_at"].(string); ok && strings.TrimSpace(termEnd) != "" {
-						if t, err := time.Parse(time.RFC3339, termEnd); err == nil && t.Before(now) {
-							isEnded = true
-						}
-					}
-				}
-			}
-
-			concluded, _ := rc["concluded"].(bool)
-
-			status := "current"
-			if isEnded || concluded || wfState == "completed" {
-				status = "previous"
-			} else if wfState == "unpublished" {
-				status = "upcoming"
-			} else {
-				status = "current"
-			}
-
-			cid := normalizeIDString(rc["id"])
-			if color, ok := canvasColors["course_"+cid]; ok && color != "" {
-				rc["color"] = color
-				rc["backgroundColor"] = color
-			} else if color, ok := canvasColors[cid]; ok && color != "" {
-				rc["color"] = color
-				rc["backgroundColor"] = color
-			}
-
-			origName, _ := rc["name"].(string)
-			if nick, ok := localNicknames[cid]; ok && nick != "" {
-				rc["nickname"] = nick
-				rc["original_name"] = origName
-				rc["name"] = nick
-			} else if nick, ok := localNicknames[origName]; ok && nick != "" {
-				rc["nickname"] = nick
-				rc["original_name"] = origName
-				rc["name"] = nick
-			}
-
-			rc["status"] = status
-			courses = append(courses, rc)
+			courses = append(courses, course)
 		}
 
 		// Update user record if authenticated
 		if authRecord != nil {
-			authRecord.Set("canvas_connected", true)
-			authRecord.Set("canvas_student_name", canvasUser.Name)
-			_ = app.Save(authRecord)
+			user := proxies.NewUser(authRecord)
+			user.SetCanvasConnected(true)
+			user.SetCanvasStudentName(canvasUser.Name)
+			_ = app.Save(user)
 
 			// Also synchronize course colors into the calendars collection in PocketBase
-			if len(canvasColors) > 0 {
-				if calRecords, errCal := app.FindRecordsByFilter(
-					"calendars",
-					"user = {:user} && source = 'canvas'",
-					"",
-					200,
-					0,
-					map[string]any{"user": authRecord.Id},
-				); errCal == nil {
-					for _, cal := range calRecords {
-						cid := cal.GetString("course_id")
-						cColor := ""
-						if color, ok := canvasColors["course_"+cid]; ok && color != "" {
-							cColor = color
-						} else if color, ok := canvasColors[cid]; ok && color != "" {
-							cColor = color
-						}
-						if cColor != "" && cal.GetString("color") != cColor {
-							cal.Set("color", cColor)
-							_ = app.Save(cal)
-						}
-					}
+			if errs := applyCanvasColorsToRecords(app, authRecord, canvasColors); len(errs) > 0 {
+				for _, err := range errs {
+					log.Printf("Warning updating Canvas course colors: %v", err)
 				}
 			}
 		}
@@ -217,6 +132,43 @@ func handleCanvasVerify(app core.App) func(event *core.RequestEvent) error {
 			Courses:     courses,
 		})
 	}
+}
+
+func applyCanvasColorsToRecords(app core.App, authRecord *core.Record, canvasColors map[string]string) []error {
+	if authRecord == nil || len(canvasColors) == 0 {
+		return nil
+	}
+
+	calendars := []*proxies.Calendar{}
+
+	err := app.RecordQuery(proxies.CollectionCalendars).
+		AndWhere(dbx.HashExp{"user": authRecord.Id}).
+		AndWhere(dbx.NewExp("course_id != ''")).
+		All(&calendars)
+
+	if err != nil {
+		return []error{fmt.Errorf("failed to query calendars for user: %w", err)}
+	}
+
+	var errs []error
+	for _, calendar := range calendars {
+		cid := calendar.CourseID()
+		calendarColor := ""
+		if col, ok := canvasColors["course_"+cid]; ok && col != "" {
+			calendarColor = col
+		} else if col, ok := canvasColors[cid]; ok && col != "" {
+			calendarColor = col
+		}
+
+		if calendarColor != "" && calendar.Color() != calendarColor {
+			calendar.SetColor(calendarColor)
+			if err := app.Save(calendar); err != nil {
+				errs = append(errs, fmt.Errorf("failed to update color for calendar %s: %w", calendar.Name(), err))
+			}
+		}
+	}
+
+	return errs
 }
 
 func executeCanvasGetRequest[T any](httpClient *http.Client, endpointURL string, apiToken string) (T, error) {
@@ -247,15 +199,107 @@ func executeCanvasGetRequest[T any](httpClient *http.Client, endpointURL string,
 	return target, nil
 }
 
-func fetchCanvasCourses(httpClient *http.Client, institutionURL string, apiToken string) ([]map[string]any, error) {
+type CanvasCourseTerm struct {
+	ID            any        `json:"id,omitempty"`
+	Name          string     `json:"name,omitempty"`
+	StartAt       string     `json:"start_at,omitempty"`
+	EndAt         string     `json:"end_at,omitempty"`
+	ParsedStartAt *time.Time `json:"-"`
+	ParsedEndAt   *time.Time `json:"-"`
+}
+
+type CanvasCourse struct {
+	ID                     any               `json:"id"`
+	Name                   string            `json:"name"`
+	CourseCode             string            `json:"course_code,omitempty"`
+	WorkflowState          string            `json:"workflow_state,omitempty"`
+	AccessRestrictedByDate bool              `json:"access_restricted_by_date,omitempty"`
+	EndAt                  string            `json:"end_at,omitempty"`
+	ParsedEndAt            *time.Time        `json:"-"`
+	IsEnded                bool              `json:"is_ended,omitempty"`
+	Concluded              bool              `json:"concluded,omitempty"`
+	Term                   *CanvasCourseTerm `json:"term,omitempty"`
+
+	// Presentation / UI properties enriched during verify
+	Color           string `json:"color,omitempty"`
+	BackgroundColor string `json:"backgroundColor,omitempty"`
+	Status          string `json:"status,omitempty"`
+}
+
+func (c *CanvasCourse) CourseID() string {
+	return normalizeIDString(c.ID)
+}
+
+func normalizeCanvasCourses(courses []CanvasCourse) []CanvasCourse {
+	now := time.Now()
+	for i := range courses {
+		c := &courses[i]
+
+		// 1. Normalize ID (e.g. 12345.0 or 12345 -> "12345")
+		c.ID = normalizeIDString(c.ID)
+
+		// 2. Trim whitespace on text fields
+		c.Name = strings.TrimSpace(c.Name)
+		c.CourseCode = strings.TrimSpace(c.CourseCode)
+
+		// 3. Lowercase and trim workflow_state (e.g. "Available" -> "available")
+		c.WorkflowState = strings.ToLower(strings.TrimSpace(c.WorkflowState))
+
+		// 4. Parse course end time and determine if ended
+		c.EndAt = strings.TrimSpace(c.EndAt)
+		if c.EndAt != "" {
+			if t, err := time.Parse(time.RFC3339, c.EndAt); err == nil {
+				c.ParsedEndAt = &t
+				if t.Before(now) {
+					c.IsEnded = true
+				}
+			}
+		}
+
+		// 5. Trim and parse term fields
+		if c.Term != nil {
+			c.Term.Name = strings.TrimSpace(c.Term.Name)
+			c.Term.ID = normalizeIDString(c.Term.ID)
+
+			c.Term.StartAt = strings.TrimSpace(c.Term.StartAt)
+			if c.Term.StartAt != "" {
+				if t, err := time.Parse(time.RFC3339, c.Term.StartAt); err == nil {
+					c.Term.ParsedStartAt = &t
+				}
+			}
+
+			c.Term.EndAt = strings.TrimSpace(c.Term.EndAt)
+			if c.Term.EndAt != "" {
+				if t, err := time.Parse(time.RFC3339, c.Term.EndAt); err == nil {
+					c.Term.ParsedEndAt = &t
+					if !c.IsEnded && t.Before(now) {
+						c.IsEnded = true
+					}
+				}
+			}
+		}
+
+		// 6. Pre-calculate academic status (current, previous, upcoming)
+		if c.IsEnded || c.Concluded || c.WorkflowState == "completed" {
+			c.Status = "previous"
+		} else if c.WorkflowState == "unpublished" {
+			c.Status = "upcoming"
+		} else {
+			c.Status = "current"
+		}
+	}
+	return courses
+}
+
+func fetchCanvasCourses(httpClient *http.Client, institutionURL string, apiToken string) ([]CanvasCourse, error) {
 	primaryEndpoint := fmt.Sprintf(
 		"%s/api/v1/users/self/courses?include[]=sections&include[]=term&include[]=concluded&include[]=enrollments&state[]=available&state[]=unpublished&state[]=completed&per_page=100",
 		institutionURL,
 	)
 
-	courses, primaryErr := executeCanvasGetRequest[[]map[string]any](httpClient, primaryEndpoint, apiToken)
+	courses, primaryErr := executeCanvasGetRequest[[]CanvasCourse](httpClient, primaryEndpoint, apiToken)
 	if primaryErr == nil {
-		return courses, nil
+		return normalizeCanvasCourses(courses), nil
 	}
 
 	fallbackEndpoint := fmt.Sprintf(
@@ -263,12 +307,12 @@ func fetchCanvasCourses(httpClient *http.Client, institutionURL string, apiToken
 		institutionURL,
 	)
 
-	fallbackCourses, fallbackErr := executeCanvasGetRequest[[]map[string]any](httpClient, fallbackEndpoint, apiToken)
+	fallbackCourses, fallbackErr := executeCanvasGetRequest[[]CanvasCourse](httpClient, fallbackEndpoint, apiToken)
 	if fallbackErr != nil {
 		return nil, fmt.Errorf("canvas course retrieval failed: primary error (%w), fallback error (%w)", primaryErr, fallbackErr)
 	}
 
-	return fallbackCourses, nil
+	return normalizeCanvasCourses(fallbackCourses), nil
 }
 
 func fetchCanvasCourseColors(httpClient *http.Client, institutionURL string, apiToken string) (map[string]string, error) {
@@ -424,46 +468,112 @@ func resolveCanvasPlannerItemURL(plannerItem map[string]any, plannableData map[s
 	return ""
 }
 
-func upsertTaskRecord(app core.App, tasksCollection *core.Collection, userID string, calendarID string, taskName string, dueDate string, status string, grade string, sourceLink string) error {
-	existingTaskRecord, _ := app.FindFirstRecordByFilter(
-		"tasks",
-		"user = {:user} && name = {:name}",
-		map[string]any{
-			"user": userID,
-			"name": taskName,
-		},
-	)
-
-	targetRecord := existingTaskRecord
-	if targetRecord == nil {
-		targetRecord = core.NewRecord(tasksCollection)
-		targetRecord.Set("user", userID)
-		targetRecord.Set("name", taskName)
-		targetRecord.Set("priority", "med")
+func upsertTaskRecord(
+	app core.App,
+	tasksCollection *core.Collection,
+	authRecord *core.Record,
+	calendarToUserID map[string]string,
+	calendarID string,
+	name string,
+	dueDate string,
+	status *proxies.TaskStatus,
+	grade *string,
+	sourceLink *string,
+) error {
+	if authRecord == nil || authRecord.Id == "" {
+		return fmt.Errorf("valid auth record required to upsert task")
+	}
+	if calendarID == "" || strings.TrimSpace(name) == "" {
+		return fmt.Errorf("cannot upsert: calendarID and name are required fields")
 	}
 
-	targetRecord.Set("calendar", calendarID)
-	if tasksCollection.Fields.GetByName("calendar_id") != nil {
-		targetRecord.Set("calendar_id", calendarID)
-	}
-	targetRecord.Set("due_date", dueDate)
+	// Verify calendar exists and belongs to this user
+	if calendarToUserID != nil {
+		ownerID, found := calendarToUserID[calendarID]
+		if !found {
+			cal := &proxies.Calendar{}
+			err := app.RecordQuery(proxies.CollectionCalendars).
+				AndWhere(dbx.HashExp{"id": calendarID}).
+				Limit(1).
+				One(cal)
+			if err != nil {
+				return fmt.Errorf("calendar %q does not exist: %w", calendarID, err)
+			}
+			ownerID = cal.UserID()
+			calendarToUserID[calendarID] = ownerID
+		}
 
-	if grade != "" {
-		targetRecord.Set("grade", grade)
+		if ownerID != authRecord.Id {
+			return fmt.Errorf("calendar %q belongs to user %q, not %q", calendarID, ownerID, authRecord.Id)
+		}
 	}
 
-	if sourceLink != "" {
-		targetRecord.Set("source_link", sourceLink)
+	task := &proxies.Task{}
+
+	err := app.RecordQuery(proxies.CollectionTasks).AndWhere(dbx.HashExp{
+		"user": authRecord.Id,
+		"name": name,
+	}).Limit(1).One(task)
+
+	if err != nil {
+		// Record not found - make new one
+		task = proxies.NewTaskRecord(tasksCollection)
+
+		// Set Canvas Fields
+		task.SetUserID(authRecord.Id)
+		task.SetCalendarID(calendarID)
+		task.SetName(name)
+		task.SetDueDate(dueDate)
+
+		if status != nil {
+			task.SetStatus(*status)
+		} else {
+			task.SetStatus(proxies.TaskStatusTodo)
+		}
+
+		if grade != nil {
+			task.SetGrade(*grade)
+		}
+
+		if sourceLink != nil {
+			task.SetSourceLink(*sourceLink)
+		}
+
+		// Local Tracking
+		task.SetPriority(proxies.TaskPriorityMed)
+
+		return app.Save(task)
 	}
 
-	// If the user or a previous sync already marked this task as done, preserve it
-	if existingTaskRecord != nil && existingTaskRecord.GetString("status") == "done" {
-		targetRecord.Set("status", "done")
-	} else {
-		targetRecord.Set("status", status)
+	// Existing record — only update fields that were actually provided
+	changes := false
+
+	if task.CalendarID() != calendarID {
+		task.SetCalendarID(calendarID)
+		changes = true
+	}
+	if task.DueDate() != dueDate {
+		task.SetDueDate(dueDate)
+		changes = true
+	}
+	if status != nil && task.Status() != *status {
+		task.SetStatus(*status)
+		changes = true
+	}
+	if grade != nil && task.Grade() != *grade {
+		task.SetGrade(*grade)
+		changes = true
+	}
+	if sourceLink != nil && *sourceLink != "" && task.SourceLink() != *sourceLink {
+		task.SetSourceLink(*sourceLink)
+		changes = true
 	}
 
-	return app.Save(targetRecord)
+	if !changes {
+		return nil
+	}
+
+	return app.Save(task)
 }
 
 func canvasSync(app core.App) func(event *core.RequestEvent) error {
@@ -500,37 +610,30 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 			return err
 		}
 
-		calendarsCollection, errCal := app.FindCollectionByNameOrId("calendars")
+		calendarsCollection, errCal := app.FindCollectionByNameOrId(proxies.CollectionCalendars)
 		if errCal != nil || calendarsCollection == nil {
 			log.Printf("Error: calendars collection does not exist: %v", errCal)
 			return event.InternalServerError("calendars collection does not exist", errCal)
 		}
 
-		tasksCollection, errTask := app.FindCollectionByNameOrId("tasks")
+		tasksCollection, errTask := app.FindCollectionByNameOrId(proxies.CollectionTasks)
 		if errTask != nil || tasksCollection == nil {
 			log.Printf("Error: tasks collection does not exist: %v", errTask)
 			return event.InternalServerError("tasks collection does not exist", errTask)
 		}
 
 		canvasCourseToCalendarID := make(map[string]string)
+		calendarToUserID := make(map[string]string)
 		syncedCourseCount := 0
 		fallbackPalette := []string{"#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#ec4899", "#06b6d4"}
 
 		for index, courseData := range rawCourses {
-			if restricted, ok := courseData["access_restricted_by_date"].(bool); ok && restricted {
-				continue
-			}
-			workflowState := strings.ToLower(fmt.Sprintf("%v", courseData["workflow_state"]))
-			if workflowState == "deleted" {
-				continue
-			}
-			courseName, _ := courseData["name"].(string)
-			courseName = strings.TrimSpace(courseName)
-			if courseName == "" {
+			if courseData.AccessRestrictedByDate || courseData.WorkflowState == "deleted" || courseData.Name == "" {
 				continue
 			}
 
-			courseID := normalizeIDString(courseData["id"])
+			courseName := courseData.Name
+			courseID := courseData.CourseID()
 			if courseID == "" {
 				continue
 			}
@@ -543,7 +646,7 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 			}
 
 			existingCalendarRecord, _ := app.FindFirstRecordByFilter(
-				"calendars",
+				proxies.CollectionCalendars,
 				"user = {:user} && (course_id = {:courseID} || name = {:name})",
 				map[string]any{
 					"user":     authRecord.Id,
@@ -554,39 +657,41 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 
 			calendarID := ""
 			if existingCalendarRecord != nil {
-				calendarID = existingCalendarRecord.Id
+				cal := proxies.NewCalendar(existingCalendarRecord)
+				calendarID = cal.Id
 				needsPersist := false
-				if existingCalendarRecord.GetString("source") != "canvas" {
-					existingCalendarRecord.Set("source", "canvas")
+				if cal.Source() != proxies.CalendarSourceCanvas {
+					cal.SetSource(proxies.CalendarSourceCanvas)
 					needsPersist = true
 				}
-				if resolvedColor != "" && existingCalendarRecord.GetString("color") != resolvedColor {
-					existingCalendarRecord.Set("color", resolvedColor)
+				if resolvedColor != "" && cal.Color() != resolvedColor {
+					cal.SetColor(resolvedColor)
 					needsPersist = true
 				}
-				if existingCalendarRecord.GetString("course_id") == "" && courseID != "" {
-					existingCalendarRecord.Set("course_id", courseID)
+				if cal.CourseID() == "" && courseID != "" {
+					cal.SetCourseID(courseID)
 					needsPersist = true
 				}
 				if needsPersist {
-					_ = app.Save(existingCalendarRecord)
+					_ = app.Save(cal)
 				}
 			} else {
-				newCalendarRecord := core.NewRecord(calendarsCollection)
-				newCalendarRecord.Set("user", authRecord.Id)
-				newCalendarRecord.Set("name", courseName)
-				newCalendarRecord.Set("color", resolvedColor)
-				newCalendarRecord.Set("source", "canvas")
-				newCalendarRecord.Set("visible", true)
-				newCalendarRecord.Set("course_id", courseID)
-				if err := app.Save(newCalendarRecord); err != nil {
+				newCal := proxies.NewCalendarRecord(calendarsCollection)
+				newCal.SetUserID(authRecord.Id)
+				newCal.SetName(courseName)
+				newCal.SetColor(resolvedColor)
+				newCal.SetSource(proxies.CalendarSourceCanvas)
+				newCal.SetVisible(true)
+				newCal.SetCourseID(courseID)
+				if err := app.Save(newCal); err != nil {
 					log.Printf("Failed to insert calendar for course %s: %v", courseName, err)
 					continue
 				}
-				calendarID = newCalendarRecord.Id
+				calendarID = newCal.Id
 			}
 
 			canvasCourseToCalendarID[courseID] = calendarID
+			calendarToUserID[calendarID] = authRecord.Id
 			syncedCourseCount++
 		}
 
@@ -615,7 +720,7 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 				if pp, ok := assignmentData["points_possible"].(float64); ok {
 					pointsPossible = pp
 				}
-				taskStatus := "todo"
+				taskStatus := proxies.TaskStatusTodo
 				gradeStr := ""
 				if submissionData, ok := assignmentData["submission"].(map[string]any); ok && submissionData != nil {
 					workflowState, _ := submissionData["workflow_state"].(string)
@@ -623,14 +728,22 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 					submittedAtTimestamp, _ := submissionData["submitted_at"].(string)
 					hasScore := submissionData["score"] != nil || submissionData["grade"] != nil
 					if workflowState == "graded" || workflowState == "complete" || workflowState == "submitted" || strings.TrimSpace(submittedAtTimestamp) != "" || hasScore {
-						taskStatus = "done"
+						taskStatus = proxies.TaskStatusDone
 					}
 					gradeStr = formatGradeString(submissionData, pointsPossible)
 				}
 
+				var gradePtr *string
+				if gradeStr != "" {
+					gradePtr = &gradeStr
+				}
 				sourceLink := resolveCanvasAssignmentURL(assignmentData, canvasURL, courseID)
+				var sourceLinkPtr *string
+				if sourceLink != "" {
+					sourceLinkPtr = &sourceLink
+				}
 
-				if err := upsertTaskRecord(app, tasksCollection, authRecord.Id, calendarID, assignmentTitle, dueAtTimestamp, taskStatus, gradeStr, sourceLink); err == nil {
+				if err := upsertTaskRecord(app, tasksCollection, authRecord, calendarToUserID, calendarID, assignmentTitle, dueAtTimestamp, &taskStatus, gradePtr, sourceLinkPtr); err == nil {
 					upsertedTaskCount++
 				}
 			}
@@ -693,19 +806,19 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 				contextName = strings.TrimSpace(contextName)
 				if contextName != "" {
 					existingCalendarRecord, _ := app.FindFirstRecordByFilter(
-						"calendars",
+						proxies.CollectionCalendars,
 						"user = {:user} && name = {:name}",
 						map[string]any{"user": authRecord.Id, "name": contextName},
 					)
 					if existingCalendarRecord != nil {
 						calendarID = existingCalendarRecord.Id
 					} else {
-						newCalendarRecord := core.NewRecord(calendarsCollection)
-						newCalendarRecord.Set("user", authRecord.Id)
-						newCalendarRecord.Set("name", contextName)
-						newCalendarRecord.Set("color", "#3b82f6")
-						newCalendarRecord.Set("source", "canvas")
-						newCalendarRecord.Set("visible", true)
+						newCalendarRecord := proxies.NewCalendarRecord(calendarsCollection)
+						newCalendarRecord.SetUserID(authRecord.Id)
+						newCalendarRecord.SetName(contextName)
+						newCalendarRecord.SetColor("#3b82f6")
+						newCalendarRecord.SetSource(proxies.CalendarSourceCanvas)
+						newCalendarRecord.SetVisible(true)
 						if err := app.Save(newCalendarRecord); err == nil {
 							calendarID = newCalendarRecord.Id
 						}
@@ -722,7 +835,7 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 			if plannableType == "announcement" {
 				// Canvas announcement: Save to `events` collection as an announcement, NEVER as a task or deadline
 				existingTaskRecord, _ := app.FindFirstRecordByFilter(
-					"tasks",
+					proxies.CollectionTasks,
 					"user = {:user} && name = {:name}",
 					map[string]any{"user": authRecord.Id, "name": taskTitle},
 				)
@@ -730,26 +843,28 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 					_ = app.Delete(existingTaskRecord)
 				}
 
-				eventsCollection, errEvt := app.FindCollectionByNameOrId("events")
+				eventsCollection, errEvt := app.FindCollectionByNameOrId(proxies.CollectionEvents)
 				if errEvt == nil && eventsCollection != nil {
 					existingAnn, _ := app.FindFirstRecordByFilter(
-						"events",
+						proxies.CollectionEvents,
 						"calendar = {:cal} && title = {:title} && (announcement = true || deadline = true)",
 						map[string]any{"cal": calendarID, "title": taskTitle},
 					)
-					targetAnn := existingAnn
-					if targetAnn == nil {
-						targetAnn = core.NewRecord(eventsCollection)
-						targetAnn.Set("calendar", calendarID)
+					var targetAnn *proxies.Event
+					if existingAnn != nil {
+						targetAnn = proxies.NewEvent(existingAnn)
+					} else {
+						targetAnn = proxies.NewEventRecord(eventsCollection)
+						targetAnn.SetCalendarID(calendarID)
 					}
-					targetAnn.Set("title", taskTitle)
-					targetAnn.Set("start", dueAtTimestamp)
-					targetAnn.Set("end", dueAtTimestamp)
-					targetAnn.Set("allday", false)
-					targetAnn.Set("announcement", true)
-					targetAnn.Set("deadline", false) // BE CAREFUL: Never mark as both announcement and deadline!
+					targetAnn.SetTitle(taskTitle)
+					targetAnn.SetStart(dueAtTimestamp)
+					targetAnn.SetEnd(dueAtTimestamp)
+					targetAnn.SetAllDay(false)
+					targetAnn.SetAnnouncement(true)
+					targetAnn.SetDeadline(false) // BE CAREFUL: Never mark as both announcement and deadline!
 					if desc, ok := plannableData["message"].(string); ok && desc != "" {
-						targetAnn.Set("description", desc)
+						targetAnn.SetDescription(desc)
 					}
 					if err := app.Save(targetAnn); err != nil {
 						log.Printf("Failed to save announcement event %s: %v", taskTitle, err)
@@ -758,23 +873,33 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 				continue
 			}
 
-			taskStatus := "todo"
-			gradeStr := ""
+			var taskStatusPtr *proxies.TaskStatus
+			var gradePtr *string
+
 			if submissionsData, ok := plannerItem["submissions"].(map[string]any); ok && submissionsData != nil {
 				isSubmitted, _ := submissionsData["submitted"].(bool)
 				isGraded, _ := submissionsData["graded"].(bool)
 				workflowState, _ := submissionsData["workflow_state"].(string)
 				workflowState = strings.ToLower(workflowState)
 				hasScore := submissionsData["score"] != nil || submissionsData["grade"] != nil
+				st := proxies.TaskStatusTodo
 				if isSubmitted || isGraded || workflowState == "submitted" || workflowState == "graded" || workflowState == "complete" || hasScore {
-					taskStatus = "done"
+					st = proxies.TaskStatusDone
 				}
-				gradeStr = formatGradeString(submissionsData, 0)
+				taskStatusPtr = &st
+
+				if g := formatGradeString(submissionsData, 0); g != "" {
+					gradePtr = &g
+				}
 			}
 
 			sourceLink := resolveCanvasPlannerItemURL(plannerItem, plannableData, canvasURL, normalizedCourseID)
+			var sourceLinkPtr *string
+			if sourceLink != "" {
+				sourceLinkPtr = &sourceLink
+			}
 
-			if err := upsertTaskRecord(app, tasksCollection, authRecord.Id, calendarID, taskTitle, dueAtTimestamp, taskStatus, gradeStr, sourceLink); err == nil {
+			if err := upsertTaskRecord(app, tasksCollection, authRecord, calendarToUserID, calendarID, taskTitle, dueAtTimestamp, taskStatusPtr, gradePtr, sourceLinkPtr); err == nil {
 				upsertedTaskCount++
 			} else {
 				log.Printf("Failed to upsert task %s: %v", taskTitle, err)
