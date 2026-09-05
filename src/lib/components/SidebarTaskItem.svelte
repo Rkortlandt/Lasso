@@ -1,6 +1,7 @@
 <script lang="ts">
 	import GripVertical from "@lucide/svelte/icons/grip-vertical";
 	import CheckIcon from "@lucide/svelte/icons/check";
+	import Trash2 from "@lucide/svelte/icons/trash-2";
 	import { authState } from "$lib/authState.svelte";
 	import { dataState } from "$lib/dataState/dataState.svelte";
 	import { dragState, type DragTaskPayload } from "$lib/dragState.svelte";
@@ -15,11 +16,14 @@
 		task: TaskRecord;
 		calendar: CalendarRecord;
 		completed?: boolean;
+		onDelete?: (taskId: string) => void;
 	}
 
-	let { task, calendar, completed = false }: Props = $props();
+	let { task, calendar, completed = false, onDelete }: Props = $props();
 
 	const canvasUrl = $derived.by(() => {
+		if (task.source_link) return task.source_link;
+
 		const isCanvas =
 			calendar?.source === "canvas" ||
 			task.expand?.calendar?.source === "canvas" ||
@@ -270,6 +274,20 @@
 						>
 							{task.grade}
 						</span>
+					{/if}
+					{#if onDelete}
+						<button
+							type="button"
+							class="opacity-0 group-hover/task:opacity-100 hover:text-destructive text-muted-foreground/40 hover:bg-sidebar-accent/50 p-0.5 rounded transition-all cursor-pointer shrink-0"
+							onclick={(e) => {
+								e.stopPropagation();
+								onDelete(task.id);
+							}}
+							title="Delete task"
+							aria-label="Delete task"
+						>
+							<Trash2 class="size-3" />
+						</button>
 					{/if}
 				</div>
 

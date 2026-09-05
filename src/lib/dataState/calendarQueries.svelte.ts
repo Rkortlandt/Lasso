@@ -1,6 +1,8 @@
 import { dataState } from "$lib/dataState/dataState.svelte";
 import { type CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
 
+import { pb } from "$lib/pocketbase";
+
 /**
  * Derives a fast lookup Map of calendar ID -> CalendarRecord.
  * Automatically reactive when dataState.calendars changes.
@@ -15,12 +17,59 @@ export function getCalendarMap(): Map<string, CalendarRecord> {
 
 /**
  * Derives calendars that belong to coursework / Canvas courses.
- * Filters out personal Google calendars.
+ * Filters out personal Google calendars and the user's personal To Do calendar.
  */
 export function getCourseworkCalendars(): CalendarRecord[] {
 	return dataState.calendars.filter(
-		(c) => c.source !== "google" && !c.calendar_id,
+		(c) =>
+			c.source !== "google" &&
+			!c.calendar_id &&
+			c.source !== "todo" &&
+			c.source !== "internal" &&
+			(c.name || "").toLowerCase().trim() !== "to do",
 	);
+}
+
+/**
+ * Finds the user's personal To Do calendar.
+ */
+export function getTodoCalendar(): CalendarRecord | undefined {
+	return dataState.calendars.find(
+		(c) =>
+			c.source === "todo" ||
+			c.source === "internal" ||
+			(c.name || "").toLowerCase().trim() === "to do",
+	);
+}
+
+let isEnsuringTodoCalendar = false;
+
+/**
+ * Ensures a To Do calendar exists for the user. Creates one optimistically if not present.
+ */
+export async function ensureTodoCalendar(): Promise<CalendarRecord | null> {
+	const existing = getTodoCalendar();
+	if (existing) return existing;
+
+	const userId = pb.authStore.record?.id;
+	if (!userId || isEnsuringTodoCalendar) return existing || null;
+
+	isEnsuringTodoCalendar = true;
+	try {
+		const created = await dataState.addCalendar({
+			user: userId,
+			name: "To Do",
+			source: "todo",
+			color: "#10b981",
+			visible: true,
+		});
+		return created;
+	} catch (err) {
+		console.error("Failed to create todo calendar:", err);
+		return null;
+	} finally {
+		isEnsuringTodoCalendar = false;
+	}
 }
 
 /**

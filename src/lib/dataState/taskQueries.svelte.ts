@@ -1,6 +1,6 @@
 import { dataState } from "$lib/dataState/dataState.svelte";
 import { type TaskRecord, type CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
-import { getCourseworkCalendars, resolveCalendarColor } from "./calendarQueries.svelte";
+import { getCourseworkCalendars, getTodoCalendar, resolveCalendarColor } from "./calendarQueries.svelte";
 
 export interface TaskGroup {
 	calendar: CalendarRecord;
@@ -25,10 +25,15 @@ export function parseTaskCalendarId(task: TaskRecord): string | null {
 }
 
 /**
- * Sorts tasks ascending by due date (chronological).
+ * Sorts tasks ascending by due date (chronological), falling back to creation time.
  */
 export function sortTasksChronological(a: TaskRecord, b: TaskRecord): number {
-	if (!a.due_date && !b.due_date) return 0;
+	if (!a.due_date && !b.due_date) {
+		if (a.created && b.created) {
+			return new Date(a.created).getTime() - new Date(b.created).getTime();
+		}
+		return 0;
+	}
 	if (!a.due_date) return 1;
 	if (!b.due_date) return -1;
 	return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
@@ -117,4 +122,40 @@ export function getCompletedTasks(): TaskRecord[] {
 	return dataState.tasks
 		.filter((t) => t.status === "done")
 		.sort(sortTasksCompleted);
+}
+
+/**
+ * Derives tasks that belong to the user's personal To Do calendar.
+ */
+export function getTodoTasks(): {
+	calendar?: CalendarRecord;
+	tasks: TaskRecord[];
+	upcomingTasks: TaskRecord[];
+	completedTasks: TaskRecord[];
+	pendingCount: number;
+} {
+	const todoCal = getTodoCalendar();
+	if (!todoCal) {
+		return {
+			tasks: [],
+			upcomingTasks: [],
+			completedTasks: [],
+			pendingCount: 0,
+		};
+	}
+
+	const tasks = dataState.tasks
+		.filter((t) => parseTaskCalendarId(t) === todoCal.id)
+		.sort(sortTasksChronological);
+
+	const upcomingTasks = tasks.filter((t) => t.status !== "done");
+	const completedTasks = tasks.filter((t) => t.status === "done").sort(sortTasksCompleted);
+
+	return {
+		calendar: todoCal,
+		tasks,
+		upcomingTasks,
+		completedTasks,
+		pendingCount: upcomingTasks.length,
+	};
 }

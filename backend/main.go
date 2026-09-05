@@ -237,6 +237,31 @@ func main() {
 			}
 		}
 
+		if e.Record != nil && e.Record.Id != "" {
+			_, _ = ensureUserTodoCalendar(app, e.Record.Id)
+		}
+
+		return nil
+	})
+
+	// Ensure default To Do calendar exists for users on registration and password login
+	app.OnRecordCreate("users").BindFunc(func(e *core.RecordEvent) error {
+		if err := e.Next(); err != nil {
+			return err
+		}
+		if e.Record != nil && e.Record.Id != "" {
+			_, _ = ensureUserTodoCalendar(app, e.Record.Id)
+		}
+		return nil
+	})
+
+	app.OnRecordAuthWithPasswordRequest().BindFunc(func(e *core.RecordAuthWithPasswordRequestEvent) error {
+		if err := e.Next(); err != nil {
+			return err
+		}
+		if e.Record != nil && e.Record.Id != "" {
+			_, _ = ensureUserTodoCalendar(app, e.Record.Id)
+		}
 		return nil
 	})
 
@@ -260,12 +285,22 @@ func main() {
 
 	// Register custom endpoints for Canvas LMS and Google Calendar
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
-		// Ensure grade field exists on tasks collection
+		// Ensure grade and source_link fields exist on tasks collection
 		if tasksCol, err := app.FindCollectionByNameOrId("tasks"); err == nil && tasksCol != nil {
+			modified := false
 			if tasksCol.Fields.GetByName("grade") == nil {
 				tasksCol.Fields.Add(&core.TextField{
 					Name: "grade",
 				})
+				modified = true
+			}
+			if tasksCol.Fields.GetByName("source_link") == nil {
+				tasksCol.Fields.Add(&core.TextField{
+					Name: "source_link",
+				})
+				modified = true
+			}
+			if modified {
 				_ = app.Save(tasksCol)
 			}
 		}
@@ -293,6 +328,40 @@ func main() {
 			_ = app.Save(eventsCol)
 		}
 
+		// Ensure 'todo' and 'internal' exist in calendars source select field options
+		if calCol, err := app.FindCollectionByNameOrId("calendars"); err == nil && calCol != nil {
+			if f := calCol.Fields.GetByName("source"); f != nil {
+				if selField, ok := f.(*core.SelectField); ok {
+					hasTodo := false
+					hasInternal := false
+					for _, val := range selField.Values {
+						if val == "todo" {
+							hasTodo = true
+						}
+						if val == "internal" {
+							hasInternal = true
+						}
+					}
+					modified := false
+					if !hasTodo {
+						selField.Values = append(selField.Values, "todo")
+						modified = true
+					}
+					if !hasInternal {
+						selField.Values = append(selField.Values, "internal")
+						modified = true
+					}
+					if modified {
+						if err := app.Save(calCol); err != nil {
+							log.Printf("Failed to update calendars source select field: %v", err)
+						} else {
+							log.Printf("Successfully updated calendars source options to include 'todo' and 'internal'")
+						}
+					}
+				}
+			}
+		}
+
 		// Sanitize any existing events marked as both announcement and deadline (announcement takes precedence)
 		if conflictingEvts, err := app.FindRecordsByFilter("events", "announcement = true && deadline = true", "", 500, 0); err == nil {
 			for _, r := range conflictingEvts {
@@ -301,7 +370,17 @@ func main() {
 			}
 		}
 
+		// Ensure default To Do calendar exists for all existing users
+		if users, err := app.FindRecordsByFilter("users", "", "", 0, 0); err == nil {
+			for _, u := range users {
+				if _, err := ensureUserTodoCalendar(app, u.Id); err != nil {
+					log.Printf("Failed to ensure To Do calendar for user %s: %v", u.Id, err)
+				}
+			}
+		}
+
 		se.Router.POST("/api/calendar/nickname", setNickname(app))
+		se.Router.POST("/api/todo/ensure", handleEnsureTodoCalendar(app))
 
 		// Canvas LMS endpoints
 		se.Router.POST("/api/canvas/verify", handleCanvasVerify(app))
@@ -592,3 +671,59 @@ func disconnectGoogle(app core.App) func(e *core.RequestEvent) error {
 		})
 	}
 }
+
+// ensureUserTodoCalendar guarantees that a user has a dedicated To Do calendar.
+func ensureUserTodoCalendar(app core.App, userID string) (*core.Record, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("user ID required")
+	}
+
+	cal, _ := app.FindFirstRecordByFilter(
+		"calendars",
+		"user = {:user} && (source = 'todo' || name = 'To Do')",
+		map[string]any{"user": userID},
+	)
+	if cal != nil {
+		return cal, nil
+	}
+
+	col, err := app.FindCollectionByNameOrId("calendars")
+	if err != nil {
+		return nil, fmt.Errorf("calendars collection not found: %w", err)
+	}
+
+	newCal := core.NewRecord(col)
+	newCal.Set("user", userID)
+	newCal.Set("name", "To Do")
+	newCal.Set("source", "todo")
+	newCal.Set("color", "#10b981")
+	newCal.Set("visible", true)
+
+	if err := app.Save(newCal); err != nil {
+		return nil, fmt.Errorf("failed to create To Do calendar: %w", err)
+	}
+
+	log.Printf("Created default To Do calendar %s for user %s", newCal.Id, userID)
+	return newCal, nil
+}
+
+// handleEnsureTodoCalendar handles POST /api/todo/ensure to create or fetch the user's To Do calendar.
+func handleEnsureTodoCalendar(app core.App) func(e *core.RequestEvent) error {
+	return func(e *core.RequestEvent) error {
+		authRecord, err := getAuth(app, e)
+		if err != nil {
+			return err
+		}
+
+		cal, err := ensureUserTodoCalendar(app, authRecord.Id)
+		if err != nil {
+			return e.BadRequestError("Failed to ensure To Do calendar", err)
+		}
+
+		return e.JSON(http.StatusOK, map[string]any{
+			"success":  true,
+			"calendar": cal,
+		})
+	}
+}
+

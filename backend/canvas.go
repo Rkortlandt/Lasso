@@ -356,7 +356,75 @@ func formatGradeString(submissionData map[string]any, pointsPossible float64) st
 	return gradeStr
 }
 
-func upsertTaskRecord(app core.App, tasksCollection *core.Collection, userID string, calendarID string, taskName string, dueDate string, status string, grade string) error {
+func resolveCanvasAssignmentURL(assignmentData map[string]any, canvasURL string, courseID string) string {
+	rawURL := ""
+	if u, ok := assignmentData["html_url"].(string); ok && strings.TrimSpace(u) != "" {
+		rawURL = strings.TrimSpace(u)
+	} else if u, ok := assignmentData["url"].(string); ok && strings.TrimSpace(u) != "" {
+		rawURL = strings.TrimSpace(u)
+	}
+
+	if rawURL != "" {
+		if strings.HasPrefix(rawURL, "/") {
+			return strings.TrimRight(canvasURL, "/") + rawURL
+		}
+		return rawURL
+	}
+
+	if idVal := assignmentData["id"]; idVal != nil && courseID != "" && canvasURL != "" {
+		return fmt.Sprintf("%s/courses/%s/assignments/%v", strings.TrimRight(canvasURL, "/"), courseID, idVal)
+	}
+
+	return ""
+}
+
+func resolveCanvasPlannerItemURL(plannerItem map[string]any, plannableData map[string]any, canvasURL string, courseID string) string {
+	rawURL := ""
+	if u, ok := plannerItem["html_url"].(string); ok && strings.TrimSpace(u) != "" {
+		rawURL = strings.TrimSpace(u)
+	} else if plannableData != nil {
+		if u, ok := plannableData["html_url"].(string); ok && strings.TrimSpace(u) != "" {
+			rawURL = strings.TrimSpace(u)
+		} else if u, ok := plannableData["url"].(string); ok && strings.TrimSpace(u) != "" {
+			rawURL = strings.TrimSpace(u)
+		}
+	}
+	if rawURL == "" {
+		if u, ok := plannerItem["url"].(string); ok && strings.TrimSpace(u) != "" {
+			rawURL = strings.TrimSpace(u)
+		}
+	}
+
+	if rawURL != "" {
+		if strings.HasPrefix(rawURL, "/") {
+			return strings.TrimRight(canvasURL, "/") + rawURL
+		}
+		return rawURL
+	}
+
+	var plannableID any
+	if plannableData != nil && plannableData["id"] != nil {
+		plannableID = plannableData["id"]
+	} else if plannerItem["plannable_id"] != nil {
+		plannableID = plannerItem["plannable_id"]
+	}
+
+	if plannableID != nil && courseID != "" && canvasURL != "" {
+		plannableType, _ := plannerItem["plannable_type"].(string)
+		plannableType = strings.ToLower(strings.TrimSpace(plannableType))
+		if plannableType == "" || plannableType == "assignment" {
+			return fmt.Sprintf("%s/courses/%s/assignments/%v", strings.TrimRight(canvasURL, "/"), courseID, plannableID)
+		} else if plannableType == "quiz" {
+			return fmt.Sprintf("%s/courses/%s/quizzes/%v", strings.TrimRight(canvasURL, "/"), courseID, plannableID)
+		} else if plannableType == "discussion_topic" {
+			return fmt.Sprintf("%s/courses/%s/discussion_topics/%v", strings.TrimRight(canvasURL, "/"), courseID, plannableID)
+		}
+	}
+
+	return ""
+}
+
+func upsertTaskRecord(app core.App, tasksCollection *core.Collection, userID string, calendarID string, taskName string, dueDate string, status string, grade string, sourceLink string) error {
 	existingTaskRecord, _ := app.FindFirstRecordByFilter(
 		"tasks",
 		"user = {:user} && name = {:name}",
@@ -382,6 +450,10 @@ func upsertTaskRecord(app core.App, tasksCollection *core.Collection, userID str
 
 	if grade != "" {
 		targetRecord.Set("grade", grade)
+	}
+
+	if sourceLink != "" {
+		targetRecord.Set("source_link", sourceLink)
 	}
 
 	// If the user or a previous sync already marked this task as done, preserve it
@@ -556,7 +628,9 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 					gradeStr = formatGradeString(submissionData, pointsPossible)
 				}
 
-				if err := upsertTaskRecord(app, tasksCollection, authRecord.Id, calendarID, assignmentTitle, dueAtTimestamp, taskStatus, gradeStr); err == nil {
+				sourceLink := resolveCanvasAssignmentURL(assignmentData, canvasURL, courseID)
+
+				if err := upsertTaskRecord(app, tasksCollection, authRecord.Id, calendarID, assignmentTitle, dueAtTimestamp, taskStatus, gradeStr, sourceLink); err == nil {
 					upsertedTaskCount++
 				}
 			}
@@ -698,7 +772,9 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 				gradeStr = formatGradeString(submissionsData, 0)
 			}
 
-			if err := upsertTaskRecord(app, tasksCollection, authRecord.Id, calendarID, taskTitle, dueAtTimestamp, taskStatus, gradeStr); err == nil {
+			sourceLink := resolveCanvasPlannerItemURL(plannerItem, plannableData, canvasURL, normalizedCourseID)
+
+			if err := upsertTaskRecord(app, tasksCollection, authRecord.Id, calendarID, taskTitle, dueAtTimestamp, taskStatus, gradeStr, sourceLink); err == nil {
 				upsertedTaskCount++
 			} else {
 				log.Printf("Failed to upsert task %s: %v", taskTitle, err)

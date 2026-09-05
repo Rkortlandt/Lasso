@@ -123,6 +123,7 @@
 		itemType: "event" | "announcement" | "deadline";
 		courseId: string;
 		description?: string;
+		source_link?: string;
 	}
 
 	let selectedOverlayItem = $state<SelectedOverlayItem | null>(null);
@@ -152,12 +153,21 @@
 			courseId = cal?.course_id || "";
 		}
 
+		let sourceLink = item.task?.source_link || item.source_link || "";
+		if (!sourceLink && item.taskId) {
+			const tsk = dataState.tasks.find((t) => t.id === item.taskId);
+			if (tsk) {
+				sourceLink = tsk.source_link || "";
+			}
+		}
+
 		selectedOverlayItem = {
 			title: item.name || item.title || "",
 			side,
 			itemType: type,
 			courseId,
 			description: item.description,
+			source_link: sourceLink,
 		};
 	}
 
@@ -165,9 +175,16 @@
 		const side: "left" | "right" = visibleColIndex < 4 ? "right" : "left";
 		const evt = dataState.events.find((e) => e.title === title && e.allday);
 		let courseId = "";
+		let sourceLink = "";
 		if (evt?.calendar) {
 			const cal = dataState.calendars.find((c) => c.id === evt.calendar);
 			courseId = cal?.course_id || "";
+		}
+		if (evt?.task) {
+			const tsk = dataState.tasks.find((t) => t.id === evt.task);
+			if (tsk) {
+				sourceLink = tsk.source_link || "";
+			}
 		}
 		selectedOverlayItem = {
 			title,
@@ -175,6 +192,7 @@
 			itemType: "event",
 			courseId,
 			description: evt?.description,
+			source_link: sourceLink,
 		};
 	}
 
@@ -296,6 +314,7 @@
 			itemType={selectedOverlayItem?.itemType ?? "event"}
 			courseId={selectedOverlayItem?.courseId ?? ""}
 			description={selectedOverlayItem?.description}
+			source_link={selectedOverlayItem?.source_link}
 			onClose={() => {
 				selectedOverlayItem = null;
 			}}

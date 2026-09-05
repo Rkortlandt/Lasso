@@ -24,10 +24,12 @@
 	import EyeOffIcon from "@lucide/svelte/icons/eye-off";
 	import Pipette from "@lucide/svelte/icons/pipette";
 	import SidebarTaskItem from "$lib/components/SidebarTaskItem.svelte";
+	import SidebarTodoList from "$lib/components/SidebarTodoList.svelte";
 	import { calendarVisibilityState } from "$lib/calendarVisibilityState.svelte";
 	import { fly, fade, slide } from "svelte/transition";
 
 	const CALENDAR_STORAGE_KEY = "lasso_sidebar_calendar_open";
+	const TODO_STORAGE_KEY = "lasso_sidebar_todo_open";
 	const TASKS_STORAGE_KEY = "lasso_sidebar_tasks_open";
 	const GOOGLE_CALENDARS_STORAGE_KEY = "lasso_sidebar_google_calendars_open";
 	const STORAGE_COLLAPSED_KEY = "lasso_sidebar_collapsed_calendars";
@@ -43,6 +45,8 @@
 		resolveCalendarColor,
 		getCourseworkCalendars,
 		getGoogleCalendars,
+		getTodoCalendar,
+		ensureTodoCalendar,
 	} from "$lib/dataState/calendarQueries.svelte";
 	import {
 		type CalendarRecord,
@@ -55,6 +59,12 @@
 	let isCalendarOpen = $state(
 		typeof window !== "undefined"
 			? localStorage.getItem(CALENDAR_STORAGE_KEY) !== "false"
+			: true,
+	);
+
+	let isTodoOpen = $state(
+		typeof window !== "undefined"
+			? localStorage.getItem(TODO_STORAGE_KEY) !== "false"
 			: true,
 	);
 
@@ -153,6 +163,19 @@
 			localStorage.setItem(CALENDAR_STORAGE_KEY, String(isCalendarOpen));
 		}
 	}
+
+	function toggleTodo() {
+		isTodoOpen = !isTodoOpen;
+		if (typeof window !== "undefined") {
+			localStorage.setItem(TODO_STORAGE_KEY, String(isTodoOpen));
+		}
+	}
+
+	$effect(() => {
+		if (!dataState.loading && authState.record?.id && !getTodoCalendar()) {
+			ensureTodoCalendar();
+		}
+	});
 
 	function toggleTasks() {
 		isTasksOpen = !isTasksOpen;
@@ -390,6 +413,45 @@
 					preventDeselect={true}
 					class="w-full border-none bg-transparent p-0 shadow-none [--cell-size:--spacing(6)] text-xs"
 				/>
+			</div>
+		{/if}
+
+		<!-- To Do Section (User-controlled personal todo list) -->
+		<div class="w-full">
+			<!-- Divider with close / toggle badge button -->
+			<div class="relative flex w-full my-1 items-center">
+				<button
+					type="button"
+					onclick={toggleTodo}
+					class="shrink-0 cursor-pointer text-left"
+				>
+					<span
+						class="text-[10px] pr-1 font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+					>
+						To Do
+					</span>
+				</button>
+				<div class="w-full h-full border-t border-sidebar-border"></div>
+				<div class="w-8 flex items-center justify-center shrink-0">
+					<button
+						type="button"
+						onclick={toggleTodo}
+						class="relative flex items-center justify-center rounded-full border border-sidebar-border bg-sidebar-accent text-sidebar-foreground hover:bg-sidebar-accent/80 hover:text-primary transition-all cursor-pointer shadow-2xs h-4.5 px-2 gap-1"
+						aria-label={isTodoOpen ? "Close to do" : "Open to do"}
+						title={isTodoOpen ? "Close to do" : "Open to do"}
+					>
+						<ChevronUp
+							class="size-2.5 transition-transform duration-200 {isTodoOpen
+								? ''
+								: 'rotate-180'}"
+						/>
+					</button>
+				</div>
+			</div>
+		</div>
+		{#if isTodoOpen}
+			<div transition:slide={{ duration: 200 }} class="mb-1">
+				<SidebarTodoList />
 			</div>
 		{/if}
 

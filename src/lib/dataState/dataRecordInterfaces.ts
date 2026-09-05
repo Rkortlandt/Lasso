@@ -40,6 +40,7 @@ export interface TaskRecord {
 	status?: "todo" | "done" | string;
 	priority?: "low" | "med" | "high" | string;
 	grade?: string;
+	source_link?: string;
 	due_date?: string;
 	fake_due_date?: string;
 	created?: string;
