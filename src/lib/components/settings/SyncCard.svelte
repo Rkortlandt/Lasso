@@ -190,7 +190,11 @@
 
 	<!-- Linear Data Sync Pipeline (Arranged in a line, square parts, icon background, animated dotted trail) -->
 	<div class="py-2">
-		<div class="flex items-center justify-between gap-1.5 sm:gap-3 w-full">
+		<div
+			class="flex items-center justify-center gap-1.5 sm:gap-3 w-full {dataState.isGoogleExportEnabled
+				? 'max-w-2xl'
+				: 'max-w-md sm:max-w-lg'} mx-auto transition-all duration-300"
+		>
 			<!-- Part 1: Canvas LMS -->
 			<SyncSquareButton
 				title="Canvas LMS"
@@ -209,7 +213,7 @@
 
 			<!-- Trail 1: Animated Dotted Trail between Canvas and Google In -->
 			<div
-				class="flex-1 min-w-[20px] max-w-[80px] sm:max-w-[120px] flex items-center justify-evenly px-1 sm:px-2"
+				class="shrink-0 w-14 sm:w-24 flex items-center justify-evenly px-1 sm:px-2"
 			>
 				{#each Array(6) as _, i}
 					{@const isDotActive =
@@ -239,37 +243,39 @@
 				onclick={handleSyncFromGoogle}
 			/>
 
-			<!-- Trail 2: Animated Dotted Trail between Google In and Google Out -->
-			<div
-				class="flex-1 min-w-[20px] max-w-[80px] sm:max-w-[120px] flex items-center justify-evenly px-1 sm:px-2"
-			>
-				{#each Array(6) as _, i}
-					{@const isDotActive =
-						isAnySyncing && trail2Progress >= ((i + 0.5) / 6) * 100}
-					<div
-						class="size-1.5 sm:size-2 rounded-full transition-all duration-300 {isDotActive
-							? 'bg-primary dot-primary-wave'
-							: 'bg-zinc-300 dark:bg-zinc-700'}"
-						style="--dot-idx: {i + 6};"
-					></div>
-				{/each}
-			</div>
+			{#if dataState.isGoogleExportEnabled}
+				<!-- Trail 2: Animated Dotted Trail between Google In and Google Out -->
+				<div
+					class="shrink-0 w-14 sm:w-24 flex items-center justify-evenly px-1 sm:px-2"
+				>
+					{#each Array(6) as _, i}
+						{@const isDotActive =
+							isAnySyncing && trail2Progress >= ((i + 0.5) / 6) * 100}
+						<div
+							class="size-1.5 sm:size-2 rounded-full transition-all duration-300 {isDotActive
+								? 'bg-primary dot-primary-wave'
+								: 'bg-zinc-300 dark:bg-zinc-700'}"
+							style="--dot-idx: {i + 6};"
+						></div>
+					{/each}
+				</div>
 
-			<!-- Part 3: Google Outbound -->
-			<SyncSquareButton
-				title="Google Export"
-				description="Push tasks"
-				icon={UploadCloudIcon}
-				isSynced={isGoogleOutActive}
-				isSyncing={dataState.isGoogleExporting ||
-					syncState.isSyncingGoogleOut ||
-					syncState.syncingStep === "google-out"}
-				syncingLabel="Pushing"
-				isConnected={syncState.isGoogleConnected}
-				lastSynced={googleExportLastSynced}
-				disabled={isAnySyncing}
-				onclick={handleSyncToGoogle}
-			/>
+				<!-- Part 3: Google Outbound -->
+				<SyncSquareButton
+					title="Google Export"
+					description="Push tasks"
+					icon={UploadCloudIcon}
+					isSynced={isGoogleOutActive}
+					isSyncing={dataState.isGoogleExporting ||
+						syncState.isSyncingGoogleOut ||
+						syncState.syncingStep === "google-out"}
+					syncingLabel="Pushing"
+					isConnected={syncState.isGoogleConnected}
+					lastSynced={googleExportLastSynced}
+					disabled={isAnySyncing}
+					onclick={handleSyncToGoogle}
+				/>
+			{/if}
 		</div>
 	</div>
 </div>

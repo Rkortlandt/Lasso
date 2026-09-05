@@ -199,6 +199,14 @@ func (s *SyncStatus) SetGoogleExportFeedback(feedback string) {
 	s.Set("google_export_feedback", feedback)
 }
 
+func (s *SyncStatus) GoogleExportEnabled() bool {
+	return s.GetBool("google_export_enabled")
+}
+
+func (s *SyncStatus) SetGoogleExportEnabled(enabled bool) {
+	s.Set("google_export_enabled", enabled)
+}
+
 // History Log Field
 
 func (s *SyncStatus) History() []SyncHistoryEntry {

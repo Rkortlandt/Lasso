@@ -138,6 +138,9 @@ class SyncState {
 			this.syncAllError = err;
 			return;
 		}
+		if (!dataState.isGoogleExportEnabled) {
+			return { success: true, message: "Google Calendar export is disabled in settings.", syncedCount: 0 };
+		}
 		if (this.isSyncingGoogleOut || dataState.isGoogleExporting || (!fromSyncAll && this.isSyncingAll)) return;
 		this.syncAllError = null;
 		this.isSyncingGoogleOut = true;
@@ -236,8 +239,8 @@ class SyncState {
 			this.syncingStep = null;
 			if (options?.onStepChange) await options.onStepChange(null);
 
-			// Step 3: Google Outbound (if connected)
-			if (this.isGoogleConnected) {
+			// Step 3: Google Outbound (if connected and export enabled)
+			if (this.isGoogleConnected && dataState.isGoogleExportEnabled) {
 				this.syncingStep = "google-out";
 				this.googleOutSynced = true;
 				if (options?.onStepChange) await options.onStepChange("google-out");

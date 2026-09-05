@@ -46,6 +46,7 @@ func getOrCreateSyncStatus(app core.App, userID string) (*core.Record, error) {
 	newRec.Set("canvas_status", "idle")
 	newRec.Set("google_import_status", "idle")
 	newRec.Set("google_export_status", "idle")
+	newRec.Set("google_export_enabled", true)
 	newRec.Set("history", []any{})
 
 	if err := app.Save(newRec); err != nil {

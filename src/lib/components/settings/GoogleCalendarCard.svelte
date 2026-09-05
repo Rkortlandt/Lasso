@@ -41,20 +41,15 @@
 	let isSavingNickname = $state(false);
 	let nicknameSuccessId = $state<string | null>(null);
 	let isPurging = $state(false);
-	let isExportEnabled = $state(
-		typeof window !== "undefined"
-			? localStorage.getItem("lasso_google_export_enabled") !== "false"
-			: true,
-	);
+	const isExportEnabled = $derived(dataState.isGoogleExportEnabled);
 
-	$effect(() => {
-		if (typeof window !== "undefined") {
-			localStorage.setItem(
-				"lasso_google_export_enabled",
-				String(isExportEnabled),
-			);
+	async function handleToggleExport(checked: boolean) {
+		try {
+			await dataState.setGoogleExportEnabled(checked);
+		} catch (err) {
+			console.error("Failed to toggle Google export:", err);
 		}
-	});
+	}
 
 	const swatchColors = [
 		"#2563eb", // blue
@@ -285,7 +280,8 @@
 			<div class="flex items-center gap-2.5 shrink-0 pt-2 sm:pt-0">
 				<SquareSwitch
 					id="lasso-calendar-sync-switch"
-					bind:checked={isExportEnabled}
+					checked={isExportEnabled}
+					onCheckedChange={handleToggleExport}
 					label="Enabled"
 				/>
 			</div>
@@ -294,7 +290,7 @@
 		<div
 			class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-muted-foreground pt-1"
 		>
-			{#if dataState.googleExportSyncedAt}
+			{#if isExportEnabled && dataState.googleExportSyncedAt}
 				<span
 					>Last synced: {new Date(
 						dataState.googleExportSyncedAt,

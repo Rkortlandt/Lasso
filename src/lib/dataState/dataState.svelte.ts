@@ -102,6 +102,18 @@ class DataState {
 	get googleExportFeedback(): string | undefined {
 		return this._syncStatus?.google_export_feedback;
 	}
+	get isGoogleExportEnabled(): boolean {
+		return this._syncStatus?.google_export_enabled ?? true;
+	}
+	set isGoogleExportEnabled(val: boolean) {
+		this.setGoogleExportEnabled(val);
+	}
+	get googleExportEnabled(): boolean {
+		return this._syncStatus?.google_export_enabled ?? true;
+	}
+	set googleExportEnabled(val: boolean) {
+		this.setGoogleExportEnabled(val);
+	}
 
 	// Sync History Log
 	get syncHistory(): readonly import("./dataRecordInterfaces").SyncHistoryEntry[] {
@@ -614,6 +626,52 @@ class DataState {
 			"calendars",
 			id,
 		);
+	}
+
+	// Optimistic Mutations for Sync Status
+	async updateSyncStatus(patch: Partial<SyncStatusRecord>): Promise<SyncStatusRecord | null> {
+		if (!pb.authStore.isValid || !pb.authStore.record?.id) return null;
+		const userId = pb.authStore.record.id;
+
+		if (this._syncStatus) {
+			const previous = { ...this._syncStatus };
+			this._syncStatus = { ...this._syncStatus, ...patch };
+			try {
+				const updated = await pb.collection("sync_status").update<SyncStatusRecord>(this._syncStatus.id, patch);
+				this._syncStatus = updated;
+				return updated;
+			} catch (err) {
+				this._syncStatus = previous;
+				console.error("Failed to update sync_status:", err);
+				throw err;
+			}
+		} else {
+			try {
+				let record: SyncStatusRecord;
+				try {
+					record = await pb.collection("sync_status").getFirstListItem<SyncStatusRecord>(`user = "${userId}"`);
+					record = await pb.collection("sync_status").update<SyncStatusRecord>(record.id, patch);
+				} catch {
+					record = await pb.collection("sync_status").create<SyncStatusRecord>({
+						user: userId,
+						canvas_status: "idle",
+						google_import_status: "idle",
+						google_export_status: "idle",
+						google_export_enabled: true,
+						...patch,
+					});
+				}
+				this._syncStatus = record;
+				return record;
+			} catch (err) {
+				console.error("Failed to create/update sync_status:", err);
+				throw err;
+			}
+		}
+	}
+
+	async setGoogleExportEnabled(enabled: boolean): Promise<void> {
+		await this.updateSyncStatus({ google_export_enabled: enabled });
 	}
 }
 

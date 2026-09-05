@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"backend/proxies"
+
 	"github.com/pocketbase/pocketbase/core"
 )
 
@@ -687,6 +689,29 @@ func syncLassoToGoogle(app core.App) func(e *core.RequestEvent) error {
 		authRecord, err := getAuth(app, e)
 		if err != nil {
 			return err
+		}
+
+		syncRec, err := getOrCreateSyncStatus(app, authRecord.Id)
+		if err != nil {
+			return e.InternalServerError("Failed to get sync status", err)
+		}
+		syncStatus := proxies.NewSyncStatus(syncRec)
+
+		if !syncStatus.GoogleExportEnabled() {
+			msg := "Google Calendar export is disabled in user settings."
+			_ = updateSyncStatusFinished(
+				app,
+				authRecord.Id,
+				SyncOpGoogleExport,
+				"success",
+				msg,
+				"",
+				time.Since(startTime).Milliseconds(),
+			)
+			return e.JSON(http.StatusOK, GoogleSyncResponse{
+				Success: true,
+				Message: msg,
+			})
 		}
 
 		_ = updateSyncStatusRunning(app, authRecord.Id, SyncOpGoogleExport)
