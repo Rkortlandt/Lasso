@@ -6,7 +6,7 @@
 	import type { FormattedTimedEvent } from "$lib/components/calendar/calendarTypes";
 	import { dayState } from "$lib/dayState.svelte";
 	import { themeState } from "$lib/themeState.svelte";
-	import { syncState } from "$lib/syncState.svelte";
+	import { syncController } from "$lib/syncController.svelte";
 	import { dataState } from "$lib/dataState/dataState.svelte";
 	import { parseTaskCalendarId } from "$lib/dataState/taskQueries.svelte";
 	import {
@@ -61,9 +61,9 @@
 	});
 
 	async function handleGlobalSync() {
-		if (syncState.isAnySyncing) return;
+		if (syncController.isAnySyncing) return;
 		try {
-			await syncState.syncAll();
+			await syncController.syncAll();
 		} catch (e) {
 			console.warn("Global sync error:", e);
 		}
@@ -283,7 +283,7 @@
 		visibleCount={VISIBLE_COUNT}
 		{transformPercent}
 		{isAnimating}
-		isSyncing={syncState.isAnySyncing}
+		isSyncing={syncController.isAnySyncing}
 		{getAllDayEventsForDate}
 		onSync={handleGlobalSync}
 		onSelectEvent={handleSelectAllDayEvent}

@@ -2,7 +2,7 @@
 	import { pb, POCKETBASE_URL } from "$lib/pocketbase";
 	import { authState } from "$lib/authState.svelte";
 	import { dataState } from "$lib/dataState/dataState.svelte";
-	import { syncState } from "$lib/syncState.svelte";
+	import { syncController } from "$lib/syncController.svelte";
 	import { Button } from "$lib/components/ui/button";
 	import BookOpenIcon from "@lucide/svelte/icons/book-open";
 	import ExternalLinkIcon from "@lucide/svelte/icons/external-link";
@@ -71,7 +71,7 @@
 
 			// 3. Refresh user record and run initial sync
 			await pb.collection("users").authRefresh();
-			await syncState.syncCanvas().catch(() => {});
+			await syncController.syncCanvas().catch(() => {});
 			await dataState.refresh();
 		} catch (err: any) {
 			error = err?.message || "Could not connect to Canvas";

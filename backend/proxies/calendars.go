@@ -67,6 +67,33 @@ func (c *Calendar) SetUser(user *User) {
 	}
 }
 
+// Relation: Label
+
+func (c *Calendar) LabelID() string {
+	return c.GetString("label")
+}
+
+func (c *Calendar) SetLabelID(labelID string) {
+	c.Set("label", labelID)
+}
+
+// Label returns the expanded Label proxy if loaded via PocketBase expand, or nil.
+func (c *Calendar) Label() *Label {
+	if rec := c.ExpandedOne("label"); rec != nil {
+		return NewLabel(rec)
+	}
+	return nil
+}
+
+// SetLabel assigns the foreign key from a Label proxy.
+func (c *Calendar) SetLabel(label *Label) {
+	if label != nil {
+		c.SetLabelID(label.Id)
+	} else {
+		c.SetLabelID("")
+	}
+}
+
 // Field Getters and Setters
 
 func (c *Calendar) Name() string {
@@ -123,4 +150,28 @@ func (c *Calendar) CalendarID() string {
 
 func (c *Calendar) SetCalendarID(calendarID string) {
 	c.Set("calendar_id", calendarID)
+}
+
+func (c *Calendar) StartDate() string {
+	return c.GetString("start_date")
+}
+
+func (c *Calendar) SetStartDate(startDate string) {
+	c.Set("start_date", startDate)
+}
+
+func (c *Calendar) EndDate() string {
+	return c.GetString("end_date")
+}
+
+func (c *Calendar) SetEndDate(endDate string) {
+	c.Set("end_date", endDate)
+}
+
+func (c *Calendar) GoogleLabelID() string {
+	return c.GetString("google_label_id")
+}
+
+func (c *Calendar) SetGoogleLabelID(googleLabelID string) {
+	c.Set("google_label_id", googleLabelID)
 }

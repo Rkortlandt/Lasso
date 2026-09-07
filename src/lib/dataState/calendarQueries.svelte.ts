@@ -16,18 +16,64 @@ export function getCalendarMap(): Map<string, CalendarRecord> {
 }
 
 /**
+ * Returns the sorting key for a calendar: nickname if present, otherwise canonical name.
+ */
+export function getCalendarSortKey(c: CalendarRecord): string {
+	return (c.nickname?.trim() || c.name || "").trim().toLowerCase();
+}
+
+/**
+ * Sorts calendars by nickname if present, otherwise by name (case-insensitive natural sort).
+ */
+export function sortCalendarsByNameOrNickname(a: CalendarRecord, b: CalendarRecord): number {
+	const keyA = getCalendarSortKey(a);
+	const keyB = getCalendarSortKey(b);
+	return keyA.localeCompare(keyB, undefined, { numeric: true, sensitivity: "base" });
+}
+
+/**
+ * Checks whether a course has ended/concluded based on its end_date.
+ */
+export function isCourseEnded(course: CalendarRecord): boolean {
+	if (!course.end_date) return false;
+	const raw = course.end_date.trim();
+	if (!raw) return false;
+	const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+	const end = new Date(normalized);
+	if (isNaN(end.getTime())) return false;
+	return end.getTime() < Date.now();
+}
+
+/**
  * Derives calendars that belong to coursework / Canvas courses.
  * Filters out personal Google calendars and the user's personal To Do calendar.
+ * Sorted by nickname if present, otherwise by name.
  */
 export function getCourseworkCalendars(): CalendarRecord[] {
-	return dataState.calendars.filter(
-		(c) =>
-			c.source !== "google" &&
-			!c.calendar_id &&
-			c.source !== "todo" &&
-			c.source !== "internal" &&
-			(c.name || "").toLowerCase().trim() !== "to do",
-	);
+	return dataState.calendars
+		.filter(
+			(c) =>
+				c.source !== "google" &&
+				!c.calendar_id &&
+				c.source !== "todo" &&
+				c.source !== "internal" &&
+				(c.name || "").toLowerCase().trim() !== "to do",
+		)
+		.sort(sortCalendarsByNameOrNickname);
+}
+
+/**
+ * Derives current (active) coursework calendars whose end_date has not passed.
+ */
+export function getCurrentCourseworkCalendars(): CalendarRecord[] {
+	return getCourseworkCalendars().filter((c) => !isCourseEnded(c));
+}
+
+/**
+ * Derives previous (concluded) coursework calendars whose end_date has passed.
+ */
+export function getPreviousCourseworkCalendars(): CalendarRecord[] {
+	return getCourseworkCalendars().filter((c) => isCourseEnded(c));
 }
 
 /**

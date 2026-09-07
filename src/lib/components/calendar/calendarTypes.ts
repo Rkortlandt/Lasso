@@ -44,6 +44,7 @@ export interface FormattedTimedEvent {
 	timeStr: string;
 	calendarName: string;
 	color: string;
+	calendarColor?: string;
 	topPercent: number;
 	heightPercent: number;
 	startMin: number;
@@ -53,6 +54,7 @@ export interface FormattedTimedEvent {
 	widthPercent: number;
 	description?: string;
 	isTaskBlock?: boolean;
+	isTaskDone?: boolean;
 	taskId?: string;
 	source: "google" | "canvas" | "internal";
 	rawEvent?: EventRecord;

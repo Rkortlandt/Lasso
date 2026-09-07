@@ -1,11 +1,15 @@
 <script lang="ts">
 	import { pb, POCKETBASE_URL } from "$lib/pocketbase";
 	import { authState } from "$lib/authState.svelte";
-	import { syncState } from "$lib/syncState.svelte";
+	import { syncController } from "$lib/syncController.svelte";
 	import { calendarVisibilityState } from "$lib/calendarVisibilityState.svelte";
+	import { themeState } from "$lib/themeState.svelte";
 	import { dataState } from "$lib/dataState/dataState.svelte";
 	import {
 		getGoogleCalendars,
+		getCourseworkCalendars,
+		getCurrentCourseworkCalendars,
+		getPreviousCourseworkCalendars,
 		resolveCalendarColor,
 	} from "$lib/dataState/calendarQueries.svelte";
 	import type { CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
@@ -22,6 +26,9 @@
 	import EyeOffIcon from "@lucide/svelte/icons/eye-off";
 	import SparklesIcon from "@lucide/svelte/icons/sparkles";
 	import Trash2Icon from "@lucide/svelte/icons/trash-2";
+	import InfoIcon from "@lucide/svelte/icons/info";
+	import Plus from "@lucide/svelte/icons/plus";
+	import X from "@lucide/svelte/icons/x";
 	import { fade, slide, scale } from "svelte/transition";
 	import { SquareSwitch } from "$lib/components/ui/square-switch";
 
@@ -35,16 +42,19 @@
 		),
 	);
 
-	// Detail & nickname state
 	let expandedCalendarId = $state<string | null>(null);
 	let nicknameInput = $state("");
 	let isSavingNickname = $state(false);
 	let nicknameSuccessId = $state<string | null>(null);
 	let isPurging = $state(false);
+	let isLassoSyncExpanded = $state(false);
 	const isExportEnabled = $derived(dataState.isGoogleExportEnabled);
 
 	async function handleToggleExport(checked: boolean) {
 		try {
+			if (checked) {
+				isLassoSyncExpanded = true;
+			}
 			await dataState.setGoogleExportEnabled(checked);
 		} catch (err) {
 			console.error("Failed to toggle Google export:", err);
@@ -65,6 +75,179 @@
 	function getSwatch(idx: number, fallback?: string): string {
 		if (fallback && fallback.startsWith("#")) return fallback;
 		return swatchColors[idx % swatchColors.length];
+	}
+
+	// Label state for Google Calendar export labels
+	let isAutoLabelingEnabled = $state(true);
+	let manualEditCourseIds = $state<Record<string, boolean>>({});
+
+	const courseworkCalendars = $derived(getCourseworkCalendars());
+	const currentCourses = $derived(
+		getCurrentCourseworkCalendars()
+			.filter(
+				(c) =>
+					c.visible !== false &&
+					!calendarVisibilityState.isHiddenInSidebar(c.id, c.name),
+			)
+			.map((c, idx) => ({
+				id: c.id,
+				name: c.name,
+				nickname: c.nickname,
+				label: c.label,
+				color: resolveCalendarColor(c, getSwatch(idx)),
+			})),
+	);
+
+	const previousCourses = $derived(
+		getPreviousCourseworkCalendars()
+			.filter(
+				(c) =>
+					c.visible !== false &&
+					!calendarVisibilityState.isHiddenInSidebar(c.id, c.name),
+			)
+			.map((c, idx) => ({
+				id: c.id,
+				name: c.name,
+				nickname: c.nickname,
+				label: c.label,
+				color: resolveCalendarColor(c, getSwatch(currentCourses.length + idx)),
+			})),
+	);
+
+	let isPreviousCoursesExpanded = $state(false);
+	const allVisibleCourses = $derived([...currentCourses, ...previousCourses]);
+
+	// Auto-ensure that every coursework calendar has a corresponding Label record in dataState
+	let isEnsuringLabels = false;
+
+	async function ensureCourseLabels() {
+		if (isEnsuringLabels || !pb.authStore.isValid || dataState.loading) return;
+		isEnsuringLabels = true;
+
+		try {
+			const courses = getCourseworkCalendars();
+			const existingLabels = dataState.labels;
+			const userId = pb.authStore.record?.id || "";
+
+			for (const course of courses) {
+				// If calendar already has a valid label in dataState.labels, skip
+				if (course.label && existingLabels.some((l) => l.id === course.label)) {
+					continue;
+				}
+
+				const autoName = getAutoCourseTag(course.name, course.nickname);
+				const courseColor = resolveCalendarColor(course, "#2563eb");
+
+				// Check if a label with this name already exists in user's labels
+				const existingByName = existingLabels.find(
+					(l) => l.name.toLowerCase() === autoName.toLowerCase(),
+				);
+
+				if (existingByName) {
+					await dataState.updateCalendar(course.id, { label: existingByName.id });
+				} else {
+					const created = await dataState.addLabel({
+						user: userId,
+						name: autoName,
+						color: courseColor,
+					});
+					await dataState.updateCalendar(course.id, { label: created.id });
+				}
+			}
+		} catch (err) {
+			console.error("Failed to auto-ensure course labels:", err);
+		} finally {
+			isEnsuringLabels = false;
+		}
+	}
+
+	$effect(() => {
+		if (dataState.calendars.length > 0 && !dataState.loading) {
+			ensureCourseLabels();
+		}
+	});
+
+	async function handleMainAutoSwitchToggle(enabled: boolean) {
+		isAutoLabelingEnabled = enabled;
+		if (enabled) {
+			manualEditCourseIds = {};
+			// Reset all courses to their auto tags in dataState
+			for (const course of allVisibleCourses) {
+				const autoTag = getAutoCourseTag(course.name, course.nickname);
+				const courseLabel = dataState.labels.find((l) => l.id === course.label);
+				if (courseLabel && courseLabel.name !== autoTag) {
+					await dataState.updateLabel(courseLabel.id, {
+						name: autoTag,
+						color: course.color,
+					});
+				}
+			}
+		} else {
+			const updated: Record<string, boolean> = {};
+			for (const course of allVisibleCourses) {
+				updated[course.id] = true;
+			}
+			manualEditCourseIds = updated;
+		}
+	}
+
+	function getAutoCourseTag(name: string, nickname?: string): string {
+		if (nickname && nickname.trim()) return nickname.trim();
+		const match = name.match(/\b([A-Za-z]{2,5})\s*([0-9]{3,4}[A-Za-z]?)\b/);
+		if (match) return `${match[1].toUpperCase()} ${match[2].toUpperCase()}`;
+		const words = name.trim().split(/\s+/);
+		if (words.length <= 2) return name.trim();
+		return words.slice(0, 2).join(" ").slice(0, 16);
+	}
+
+	function getContrastingTextColor(hex: string): "#ffffff" | "#000000" {
+		const clean = (hex || "").replace("#", "");
+		if (clean.length < 6) return "#ffffff";
+		const r = parseInt(clean.substring(0, 2), 16) || 0;
+		const g = parseInt(clean.substring(2, 4), 16) || 0;
+		const b = parseInt(clean.substring(4, 6), 16) || 0;
+		const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+		return lum > 0.58 ? "#000000" : "#ffffff";
+	}
+
+	function getContrastingPlaceholderColor(
+		hex: string,
+		isDarkTheme = true,
+	): string {
+		const clean = (hex || "").replace("#", "");
+		if (clean.length < 6) return isDarkTheme ? "#93c5fd" : "#1e40af";
+		const r = (parseInt(clean.substring(0, 2), 16) || 0) / 255;
+		const g = (parseInt(clean.substring(2, 4), 16) || 0) / 255;
+		const b = (parseInt(clean.substring(4, 6), 16) || 0) / 255;
+
+		const max = Math.max(r, g, b);
+		const min = Math.min(r, g, b);
+		let h = 0;
+		let s = 0;
+		const l = (max + min) / 2;
+
+		if (max !== min) {
+			const d = max - min;
+			s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+			switch (max) {
+				case r:
+					h = (g - b) / d + (g < b ? 6 : 0);
+					break;
+				case g:
+					h = (b - r) / d + 2;
+					break;
+				case b:
+					h = (r - g) / d + 4;
+					break;
+			}
+			h /= 6;
+		}
+
+		const hueDeg = Math.round(h * 360);
+		const satPct = Math.max(60, Math.round(s * 100));
+		const targetLightness = isDarkTheme ? 72 : 36;
+
+		return `hsl(${hueDeg}, ${satPct}%, ${targetLightness}%)`;
 	}
 
 	function toggleExpand(calendar: CalendarRecord) {
@@ -133,7 +316,7 @@
 	async function handleConnect() {
 		try {
 			await authState.loginWithGoogle();
-			await syncState.syncFromGoogle().catch(() => {});
+			await syncController.syncFromGoogle().catch(() => {});
 			await dataState.refresh();
 		} catch (err) {
 			console.error("Failed to connect Google Calendar:", err);
@@ -168,7 +351,7 @@
 
 	async function handleSyncToGoogle() {
 		try {
-			await syncState.syncToGoogle();
+			await syncController.syncToGoogle();
 		} catch (err) {
 			console.error("Sync to Google Calendar failed:", err);
 		}
@@ -260,33 +443,308 @@
 
 		<!-- DEDICATED LASSO CALENDAR SYNC CARD -->
 		<div
-			class="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 rounded-lg border border-border bg-card/60 overflow-hidden transition-all duration-200"
+			class="rounded-lg border border-border bg-card/60 overflow-hidden transition-all duration-200"
 		>
-			<div class="flex items-start gap-3">
-				<div>
-					<div class="flex items-center gap-2 pb-1">
-						<span class="size-2.5 rounded-xs shrink-0 shadow-2xs bg-primary"
-						></span>
+			<div
+				class="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 gap-2"
+			>
+				<button
+					type="button"
+					class="flex items-start gap-3 min-w-0 flex-1 cursor-pointer text-left bg-transparent border-none p-0 select-none group"
+					onclick={() => (isLassoSyncExpanded = !isLassoSyncExpanded)}
+					aria-expanded={isLassoSyncExpanded}
+				>
+					<div>
+						<div class="flex items-center gap-2 pb-1">
+							<span class="size-2.5 rounded-xs shrink-0 shadow-2xs bg-primary"
+							></span>
 
-						<span class="text-xs text-foreground">Lasso Calendar Sync</span>
+							<span
+								class="text-xs font-medium text-foreground group-hover:text-primary transition-colors"
+								>Lasso Calendar Sync</span
+							>
+						</div>
+						<p class="text-xs text-muted-foreground mt-0.5">
+							When enabled all Canvas coursework and deadlines are pushed to
+							this calendar in Google, tagged by course.
+						</p>
 					</div>
-					<p class="text-xs text-muted-foreground mt-0.5 lg:w-3/4">
-						When enabled all Canvas coursework and deadlines are pushed to this
-						calendar in Google, tagged by course.
-					</p>
+				</button>
+
+				<div class="flex items-center gap-2.5 shrink-0 pt-2 sm:pt-0">
+					<SquareSwitch
+						id="lasso-calendar-sync-switch"
+						checked={isExportEnabled}
+						onCheckedChange={handleToggleExport}
+						label="Enabled"
+					/>
+
+					<button
+						type="button"
+						class="p-1 text-muted-foreground hover:text-foreground cursor-pointer bg-transparent border-none"
+						onclick={() => (isLassoSyncExpanded = !isLassoSyncExpanded)}
+						aria-label="Toggle Lasso sync details"
+					>
+						<ChevronDownIcon
+							class="size-3.5 transition-transform duration-200 {isLassoSyncExpanded
+								? 'rotate-180 text-foreground'
+								: ''}"
+						/>
+					</button>
 				</div>
 			</div>
 
-			<div class="flex items-center gap-2.5 shrink-0 pt-2 sm:pt-0">
-				<SquareSwitch
-					id="lasso-calendar-sync-switch"
-					checked={isExportEnabled}
-					onCheckedChange={handleToggleExport}
-					label="Enabled"
-				/>
-			</div>
+			<!-- EXPANDED CONTENT WHEN LASSO CALENDAR SYNC IS EXPANDED -->
+			{#if isLassoSyncExpanded}
+				<div
+					transition:slide={{ duration: 200 }}
+					class="border-t border-border p-3 sm:p-4 bg-muted/10 space-y-4"
+				>
+					{#if !isExportEnabled}
+						<div
+							class="flex items-center gap-2.5 p-3 rounded-md bg-muted/30 border border-border/70 text-xs text-muted-foreground"
+						>
+							<InfoIcon class="size-4 shrink-0 text-muted-foreground" />
+							<span
+								>Lasso Calendar Sync must be enabled to configure course labels.</span
+							>
+						</div>
+					{:else}
+						<!-- Course-to-Label Assignment Section -->
+						<div class="space-y-2 pt-1">
+							<div class="text-xs font-medium text-foreground">
+								Assign Labels to Courses
+							</div>
+
+							{#snippet courseLabelItem(course: { id: string; name: string; nickname?: string; label?: string; color: string })}
+								{@const autoTag = getAutoCourseTag(
+									course.name,
+									course.nickname,
+								)}
+								{@const courseLabel = dataState.labels.find(
+									(l) => l.id === course.label,
+								)}
+								{@const labelName = courseLabel ? courseLabel.name : autoTag}
+								{@const labelColor = courseLabel?.color || course.color}
+								{@const isManual = Boolean(
+									manualEditCourseIds[course.id] ||
+										(courseLabel && courseLabel.name !== autoTag),
+								)}
+								{@const autoTextColor = getContrastingTextColor(labelColor)}
+								{@const placeholderColor = getContrastingPlaceholderColor(
+									labelColor,
+									themeState.resolvedMode === "dark",
+								)}
+								<div
+									class="flex flex-col sm:flex-row sm:items-center justify-between py-1 px-1 gap-2 text-xs"
+								>
+									<div class="flex items-center gap-2 min-w-0">
+										<span
+											class="size-2 rounded-[2px] shrink-0"
+											style="background-color: {course.color};"
+										></span>
+										<span
+											class="font-medium truncate text-foreground text-[11px]"
+										>
+											{course.nickname || course.name}
+										</span>
+									</div>
+
+									<div
+										class="flex items-center gap-2 shrink-0 self-end sm:self-auto"
+									>
+										{#if !isManual}
+											<span
+												class="h-5 inline-flex items-center px-2 rounded text-[10px] font-mono font-semibold shadow-2xs min-w-[48px] justify-center"
+												style="background-color: {labelColor}; color: {autoTextColor};"
+												in:fade={{ duration: 150 }}
+											>
+												[{labelName}]
+											</span>
+										{:else}
+											<div
+												class="relative flex items-center"
+												in:fade={{ duration: 150 }}
+											>
+												<input
+													type="text"
+													placeholder={autoTag}
+													value={labelName}
+													onchange={async (e) => {
+														const val = e.currentTarget.value.trim();
+														if (courseLabel) {
+															await dataState.updateLabel(courseLabel.id, {
+																name: val || autoTag,
+															});
+														} else {
+															const newLbl = await dataState.addLabel({
+																user: pb.authStore.record?.id || "",
+																name: val || autoTag,
+																color: course.color,
+															});
+															await dataState.updateCalendar(course.id, {
+																label: newLbl.id,
+															});
+														}
+													}}
+													class="course-label-input h-5 w-24 sm:w-32 text-[11px] font-mono px-2 py-0 rounded bg-background focus:outline-none focus:ring-1 transition-colors text-white"
+													style="border: 1px solid {labelColor}; --tw-ring-color: {labelColor}; --placeholder-color: {placeholderColor};"
+												/>
+											</div>
+										{/if}
+
+										<!-- Two-button switch: Manual / Auto -->
+										<div
+											class="inline-flex items-center bg-muted/60 p-0.5 rounded-md border border-border/60 text-[11px]"
+										>
+											<button
+												type="button"
+												class="px-2 py-0.5 rounded-sm font-medium transition-all cursor-pointer {isManual
+													? 'bg-background text-foreground shadow-2xs font-semibold'
+													: 'text-muted-foreground hover:text-foreground'}"
+												onclick={() => {
+													manualEditCourseIds = {
+														...manualEditCourseIds,
+														[course.id]: true,
+													};
+												}}
+											>
+												Manual
+											</button>
+											<button
+												type="button"
+												disabled={!isAutoLabelingEnabled}
+												class="px-2 py-0.5 rounded-sm font-medium transition-all {!isManual
+													? 'bg-background text-foreground shadow-2xs font-semibold'
+													: 'text-muted-foreground hover:text-foreground'} {!isAutoLabelingEnabled
+													? 'opacity-40 cursor-not-allowed hover:text-muted-foreground'
+													: 'cursor-pointer'}"
+												title={!isAutoLabelingEnabled
+													? "Enable Automatic Course Labeling first"
+													: undefined}
+												onclick={async () => {
+													manualEditCourseIds = {
+														...manualEditCourseIds,
+														[course.id]: false,
+													};
+													if (courseLabel) {
+														await dataState.updateLabel(courseLabel.id, {
+															name: autoTag,
+															color: course.color,
+														});
+													}
+												}}
+											>
+												Auto
+											</button>
+										</div>
+									</div>
+								</div>
+							{/snippet}
+
+							<div class="space-y-1.5">
+								{#if currentCourses.length > 0}
+									{#each currentCourses as course (course.id)}
+										{@render courseLabelItem(course)}
+									{/each}
+								{:else if previousCourses.length === 0}
+									<div
+										class="p-3 rounded-md bg-muted/20 border border-border/60 text-xs text-muted-foreground flex items-center gap-2.5"
+									>
+										<InfoIcon class="size-4 shrink-0 text-muted-foreground" />
+										<span>
+											{#if !authState.record?.canvas_connected}
+												Canvas is not connected. Connect Canvas in settings to configure course labels.
+											{:else if courseworkCalendars.length === 0}
+												No Canvas courses found. Sync Canvas in settings to load course sections.
+											{:else}
+												All Canvas courses are currently marked hidden. Turn on visibility in Canvas settings to show them here.
+											{/if}
+										</span>
+									</div>
+								{/if}
+
+								<!-- Previous Courses Collapsible Section (hidden by default) -->
+								{#if previousCourses.length > 0}
+									<div class="pt-2">
+										<!-- Divider with close / toggle badge button like sidebar main dropdowns -->
+										<div class="relative flex w-full my-1 items-center">
+											<button
+												type="button"
+												onclick={() =>
+													(isPreviousCoursesExpanded = !isPreviousCoursesExpanded)}
+												class="shrink-0 cursor-pointer text-left pr-2"
+											>
+												<span
+													class="text-xs text-foreground uppercase font-bold hover:text-primary transition-colors"
+												>
+													Previous Courses ({previousCourses.length})
+												</span>
+											</button>
+											<div class="w-full h-full border-t border-border"></div>
+											<div class="w-8 flex items-center justify-center shrink-0">
+												<button
+													type="button"
+													onclick={() =>
+														(isPreviousCoursesExpanded = !isPreviousCoursesExpanded)}
+													class="relative flex items-center justify-center rounded-full border border-border bg-accent text-foreground hover:bg-accent/80 hover:text-primary transition-all cursor-pointer shadow-2xs h-4.5 px-2 gap-1"
+													aria-label={isPreviousCoursesExpanded
+														? "Close previous courses"
+														: "Open previous courses"}
+													title={isPreviousCoursesExpanded
+														? "Close previous courses"
+														: "Open previous courses"}
+												>
+													<ChevronDownIcon
+														class="size-2.5 transition-transform duration-200 {isPreviousCoursesExpanded
+															? 'rotate-180'
+															: ''}"
+													/>
+												</button>
+											</div>
+										</div>
+
+										{#if isPreviousCoursesExpanded}
+											<div
+												transition:slide={{ duration: 180 }}
+												class="space-y-1.5 mt-2"
+											>
+												{#each previousCourses as course (course.id)}
+													{@render courseLabelItem(course)}
+												{/each}
+											</div>
+										{/if}
+									</div>
+								{/if}
+							</div>
+							<div
+								class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-2.5 rounded-md border border-border bg-card/70"
+							>
+								<div class="flex items-start gap-2.5">
+									<div>
+										<div class="text-xs font-medium text-foreground">
+											Automatic Course Labeling
+										</div>
+										<p class="text-[11px] text-muted-foreground mt-0.5">
+											Auto-generate labeled Google Calendar events using course
+											name
+										</p>
+									</div>
+								</div>
+								<div class="shrink-0 self-end sm:self-center">
+									<SquareSwitch
+										id="auto-label-switch"
+										checked={isAutoLabelingEnabled}
+										onCheckedChange={handleMainAutoSwitchToggle}
+										label={isAutoLabelingEnabled ? "On" : "Off"}
+									/>
+								</div>
+							</div>
+						</div>
+					{/if}
+				</div>
+			{/if}
 		</div>
-		<hr />
 		<div
 			class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-muted-foreground pt-1"
 		>
@@ -596,5 +1054,10 @@
 <style>
 	h2 {
 		margin: 0px;
+	}
+
+	input.course-label-input::placeholder {
+		color: var(--placeholder-color);
+		opacity: 0.85;
 	}
 </style>

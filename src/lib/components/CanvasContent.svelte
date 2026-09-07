@@ -81,7 +81,7 @@
 		font-size: 1.2rem; /* 13px */
 		font-weight: 600;
 		color: var(--foreground);
-		margin-top: 0.625rem;
+		margin-top: 0.25rem;
 		margin-bottom: 0.25rem;
 		line-height: 1.35;
 	}
@@ -149,7 +149,7 @@
 	}
 
 	.canvas-content :global(th) {
-		background-color: color-mix(in srgb, var(--muted) 70%, transparent);
+		background-color: color-mix(in srgb, var(--muted) 90%, transparent);
 		color: var(--muted-foreground);
 		font-weight: 600;
 		text-align: left;
@@ -162,7 +162,7 @@
 		border: 1px solid var(--border);
 		padding: 0.375rem 0.625rem;
 		color: var(--foreground);
-		background-color: color-mix(in srgb, var(--muted) 20%, transparent);
+		background-color: color-mix(in srgb, var(--muted) 70%, transparent);
 	}
 
 	.canvas-content :global(blockquote) {

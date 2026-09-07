@@ -144,7 +144,7 @@
 		duration: 200,
 		easing: cubicOut,
 	}}
-	class="absolute top-[5.75rem] bottom-4 z-[60] flex flex-col pointer-events-auto rounded-xl bg-muted/70 dark:bg-muted/50 backdrop-blur-md border border-border/60 shadow-xl overflow-hidden {side ===
+	class="absolute top-[5.75rem] bottom-4 z-[60] flex flex-col pointer-events-auto rounded-xl bg-muted/70 dark:bg-muted/70 backdrop-blur-lg border border-border/60 shadow-xl overflow-hidden {side ===
 	'left'
 		? 'left-[4.25rem]'
 		: 'right-4'}"

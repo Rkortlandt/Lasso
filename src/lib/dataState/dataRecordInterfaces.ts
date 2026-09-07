@@ -17,6 +17,15 @@ export interface EventRecord {
 	};
 }
 
+export interface LabelRecord {
+	id: string;
+	user?: string;
+	name: string;
+	color: string;
+	created?: string;
+	updated?: string;
+}
+
 export interface CalendarRecord {
 	id: string;
 	name: string;
@@ -27,8 +36,15 @@ export interface CalendarRecord {
 	nickname?: string;
 	course_id?: string;
 	calendar_id?: string;
+	google_label_id?: string;
+	start_date?: string;
+	end_date?: string;
+	label?: string;
 	created?: string;
 	updated?: string;
+	expand?: {
+		label?: LabelRecord;
+	};
 }
 
 export interface TaskRecord {

@@ -1,5 +1,5 @@
 import { pb } from "$lib/pocketbase";
-import { type CalendarRecord, type TaskRecord, type EventRecord, type SyncStatusRecord } from "$lib/dataState/dataRecordInterfaces";
+import { type CalendarRecord, type TaskRecord, type EventRecord, type SyncStatusRecord, type LabelRecord } from "$lib/dataState/dataRecordInterfaces";
 
 interface workerState {
 	inFlight: boolean;
@@ -40,6 +40,7 @@ class DataState {
 	private _calendars = $state<CalendarRecord[]>([]);
 	private _tasks = $state<TaskRecord[]>([]);
 	private _events = $state<EventRecord[]>([]);
+	private _labels = $state<LabelRecord[]>([]);
 	private _syncStatus = $state<SyncStatusRecord | null>(null);
 	private _loading = $state<boolean>(false);
 	private _refreshing = $state<boolean>(false);
@@ -53,6 +54,9 @@ class DataState {
 	}
 	get events(): readonly EventRecord[] {
 		return this._events;
+	}
+	get labels(): readonly LabelRecord[] {
+		return this._labels;
 	}
 	get syncStatus(): SyncStatusRecord | null {
 		return this._syncStatus;
@@ -154,7 +158,7 @@ class DataState {
 		this._refreshing = true;
 
 		try {
-			const [cals, tsks, evts, syncRecord] = await Promise.all([
+			const [cals, tsks, evts, syncRecord, lbls] = await Promise.all([
 				pb.collection("calendars").getFullList<CalendarRecord>({ sort: "name" }),
 				pb.collection("tasks").getFullList<TaskRecord>({ sort: "due_date" }),
 				pb.collection("events").getFullList<EventRecord>({ sort: "start" }),
@@ -162,6 +166,10 @@ class DataState {
 					.collection("sync_status")
 					.getFirstListItem<SyncStatusRecord>(`user = "${pb.authStore.record?.id}"`)
 					.catch(() => null),
+				pb
+					.collection("labels")
+					.getFullList<LabelRecord>({ sort: "name" })
+					.catch(() => []),
 			]);
 
 			// Helper to merge incoming server records with active local state
@@ -201,6 +209,7 @@ class DataState {
 			this._calendars = mergeWithInFlight(cals, this._calendars, "calendars");
 			this._tasks = mergeWithInFlight(tsks, this._tasks, "tasks");
 			this._events = mergeWithInFlight(evts, this._events, "events");
+			this._labels = mergeWithInFlight(lbls, this._labels, "labels");
 			this._syncStatus = syncRecord;
 		} catch (err) {
 			console.error("Failed to refresh data:", err);
@@ -218,7 +227,7 @@ class DataState {
 
 		try {
 			// Initial parallel load (only user's records return from PB)
-			const [cals, tsks, evts, syncRecord] = await Promise.all([
+			const [cals, tsks, evts, syncRecord, lbls] = await Promise.all([
 				pb.collection("calendars").getFullList<CalendarRecord>({ sort: "name" }),
 				pb.collection("tasks").getFullList<TaskRecord>({ sort: "due_date" }),
 				pb.collection("events").getFullList<EventRecord>({ sort: "start" }),
@@ -226,11 +235,16 @@ class DataState {
 					.collection("sync_status")
 					.getFirstListItem<SyncStatusRecord>(`user = "${pb.authStore.record?.id}"`)
 					.catch(() => null),
+				pb
+					.collection("labels")
+					.getFullList<LabelRecord>({ sort: "name" })
+					.catch(() => []),
 			]);
 
 			this._calendars = cals;
 			this._tasks = tsks;
 			this._events = evts;
+			this._labels = lbls;
 			this._syncStatus = syncRecord;
 
 			await this.subscribeToSync();
@@ -313,6 +327,7 @@ class DataState {
 		this._events = [];
 		this._calendars = [];
 		this._tasks = [];
+		this._labels = [];
 		this._syncStatus = null;
 	}
 
@@ -624,6 +639,35 @@ class DataState {
 			() => this._calendars,
 			(val) => (this._calendars = val),
 			"calendars",
+			id,
+		);
+	}
+
+	// Optimistic Mutations for Labels
+	async addLabel(labelData: Omit<LabelRecord, "id">): Promise<LabelRecord> {
+		return this.optimisticAdd(
+			() => this._labels,
+			(val) => (this._labels = val),
+			"labels",
+			labelData,
+		);
+	}
+
+	async updateLabel(id: string, patch: Partial<LabelRecord>): Promise<LabelRecord> {
+		return this.optimisticUpdate(
+			() => this._labels,
+			(val) => (this._labels = val),
+			"labels",
+			id,
+			patch,
+		);
+	}
+
+	async deleteLabel(id: string): Promise<void> {
+		return this.optimisticDelete(
+			() => this._labels,
+			(val) => (this._labels = val),
+			"labels",
 			id,
 		);
 	}

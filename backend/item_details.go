@@ -1,6 +1,7 @@
 package main
 
 import (
+	"backend/proxies"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,8 +27,9 @@ func getCanvasItemDetails(app core.App) func(e *core.RequestEvent) error {
 			return err
 		}
 
-		canvasURL := authRecord.GetString("canvas_url")
-		canvasToken := authRecord.GetString("canvas_token")
+		user := proxies.NewUser(authRecord)
+		canvasURL := user.CanvasURL()
+		canvasToken := user.CanvasToken()
 		if canvasURL == "" || canvasToken == "" {
 			return e.BadRequestError("Canvas not connected", nil)
 		}

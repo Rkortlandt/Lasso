@@ -15,40 +15,40 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-func getCanvasAuth(authRecord *core.Record, event *core.RequestEvent) (string, string, error) {
+func getCanvasAuth(authRecord *core.Record) (string, string, error) {
 	if authRecord == nil {
-		return "", "", event.BadRequestError("Authentication required", nil)
+		return "", "", fmt.Errorf("authentication required")
 	}
 	user := proxies.NewUser(authRecord)
 	url := user.CanvasURL()
 	if url == "" {
-		return "", "", event.BadRequestError("No Canvas URL on Auth Record", nil)
+		return "", "", fmt.Errorf("no Canvas URL on Auth Record")
 	}
 	token := user.CanvasToken()
 	if token == "" {
-		return "", "", event.BadRequestError("No Canvas TOKEN on Auth Record, check your canvas is connected", nil)
+		return "", "", fmt.Errorf("no Canvas TOKEN on Auth Record, check your canvas is connected")
 	}
 
 	return url, token, nil
 }
 
-func verifyCanvasAuth(httpClient *http.Client, institutionURL string, apiToken string, event *core.RequestEvent) error {
+func verifyCanvasAuth(httpClient *http.Client, institutionURL string, apiToken string) error {
 	client := &http.Client{Timeout: 5 * time.Second}
 	canvasRequest, err := http.NewRequest(http.MethodHead, fmt.Sprintf("%s/api/v1/users/self", institutionURL), nil)
 	if err != nil {
-		return event.BadRequestError("Invalid Canvas URL format", err)
+		return fmt.Errorf("invalid Canvas URL format: %w", err)
 	}
 	canvasRequest.Header.Set("Authorization", "Bearer "+apiToken)
 
 	resp, err := client.Do(canvasRequest)
 	if err != nil {
-		return event.BadRequestError(fmt.Sprintf("Could not connect to Canvas at %s: %v", institutionURL, err), nil)
+		return fmt.Errorf("could not connect to Canvas at %s: %w", institutionURL, err)
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		return event.BadRequestError(fmt.Sprintf("Canvas rejected credentials (HTTP %d). Please check your token and institution URL.", resp.StatusCode), nil)
+		return fmt.Errorf("canvas rejected credentials (HTTP %d). Please check your token and institution URL", resp.StatusCode)
 	}
 
 	return nil
@@ -63,15 +63,14 @@ func handleCanvasVerify(app core.App) func(event *core.RequestEvent) error {
 			return err
 		}
 
-		url, token, err := getCanvasAuth(authRecord, event)
-
+		url, token, err := getCanvasAuth(authRecord)
 		if err != nil {
-			return err
+			return event.BadRequestError(err.Error(), err)
 		}
 		httpClient := &http.Client{Timeout: 10 * time.Second}
-		err = verifyCanvasAuth(httpClient, url, token, event)
+		err = verifyCanvasAuth(httpClient, url, token)
 		if err != nil {
-			return err
+			return event.BadRequestError(err.Error(), err)
 		}
 
 		canvasUser, err := fetchCanvasUser(httpClient, url, token)
@@ -214,6 +213,8 @@ type CanvasCourse struct {
 	CourseCode             string            `json:"course_code,omitempty"`
 	WorkflowState          string            `json:"workflow_state,omitempty"`
 	AccessRestrictedByDate bool              `json:"access_restricted_by_date,omitempty"`
+	StartAt                string            `json:"start_at,omitempty"`
+	ParsedStartAt          *time.Time        `json:"-"`
 	EndAt                  string            `json:"end_at,omitempty"`
 	ParsedEndAt            *time.Time        `json:"-"`
 	IsEnded                bool              `json:"is_ended,omitempty"`
@@ -245,10 +246,17 @@ func normalizeCanvasCourses(courses []CanvasCourse) []CanvasCourse {
 		// 3. Lowercase and trim workflow_state (e.g. "Available" -> "available")
 		c.WorkflowState = strings.ToLower(strings.TrimSpace(c.WorkflowState))
 
-		// 4. Parse course end time and determine if ended
+		// 4. Parse course start and end time and determine if ended
+		c.StartAt = strings.TrimSpace(c.StartAt)
+		if c.StartAt != "" {
+			if t, _, err := parseDateString(c.StartAt); err == nil {
+				c.ParsedStartAt = &t
+			}
+		}
+
 		c.EndAt = strings.TrimSpace(c.EndAt)
 		if c.EndAt != "" {
-			if t, err := time.Parse(time.RFC3339, c.EndAt); err == nil {
+			if t, _, err := parseDateString(c.EndAt); err == nil {
 				c.ParsedEndAt = &t
 				if t.Before(now) {
 					c.IsEnded = true
@@ -263,19 +271,29 @@ func normalizeCanvasCourses(courses []CanvasCourse) []CanvasCourse {
 
 			c.Term.StartAt = strings.TrimSpace(c.Term.StartAt)
 			if c.Term.StartAt != "" {
-				if t, err := time.Parse(time.RFC3339, c.Term.StartAt); err == nil {
+				if t, _, err := parseDateString(c.Term.StartAt); err == nil {
 					c.Term.ParsedStartAt = &t
 				}
 			}
 
 			c.Term.EndAt = strings.TrimSpace(c.Term.EndAt)
 			if c.Term.EndAt != "" {
-				if t, err := time.Parse(time.RFC3339, c.Term.EndAt); err == nil {
+				if t, _, err := parseDateString(c.Term.EndAt); err == nil {
 					c.Term.ParsedEndAt = &t
 					if !c.IsEnded && t.Before(now) {
 						c.IsEnded = true
 					}
 				}
+			}
+
+			// Fallback to Term dates if course dates are not set
+			if c.StartAt == "" && c.Term.StartAt != "" {
+				c.StartAt = c.Term.StartAt
+				c.ParsedStartAt = c.Term.ParsedStartAt
+			}
+			if c.EndAt == "" && c.Term.EndAt != "" {
+				c.EndAt = c.Term.EndAt
+				c.ParsedEndAt = c.Term.ParsedEndAt
 			}
 		}
 
@@ -400,6 +418,43 @@ func formatGradeString(submissionData map[string]any, pointsPossible float64) st
 	return gradeStr
 }
 
+// datesEqual checks whether two date/time strings represent the exact same timestamp.
+// Handles differences between RFC3339 ("2026-08-31T03:59:00Z") and PocketBase SQLite layout ("2026-08-31 03:59:00.000Z").
+func datesEqual(d1, d2 string) bool {
+	t1 := strings.TrimSpace(d1)
+	t2 := strings.TrimSpace(d2)
+	if t1 == t2 {
+		return true
+	}
+	if t1 == "" || t2 == "" {
+		return false
+	}
+	time1, _, err1 := parseDateString(t1)
+	time2, _, err2 := parseDateString(t2)
+	if err1 == nil && err2 == nil {
+		return time1.Equal(time2)
+	}
+	return false
+}
+
+// gradesEqual checks whether incoming grade represents no change relative to existing stored grade.
+// It avoids churn between fraction representations (e.g. "4/5") and raw score ("4").
+func gradesEqual(existing, incoming string) bool {
+	e := strings.TrimSpace(existing)
+	in := strings.TrimSpace(incoming)
+	if e == in {
+		return true
+	}
+	if in == "" {
+		return true // Never wipe existing grade with empty incoming grade
+	}
+	// If existing has full fraction "4/5" and incoming is bare score "4", keep the detailed fraction
+	if strings.HasPrefix(e, in+"/") {
+		return true
+	}
+	return false
+}
+
 func resolveCanvasAssignmentURL(assignmentData map[string]any, canvasURL string, courseID string) string {
 	rawURL := ""
 	if u, ok := assignmentData["html_url"].(string); ok && strings.TrimSpace(u) != "" {
@@ -479,12 +534,12 @@ func upsertTaskRecord(
 	status *proxies.TaskStatus,
 	grade *string,
 	sourceLink *string,
-) error {
+) (created bool, updated bool, err error) {
 	if authRecord == nil || authRecord.Id == "" {
-		return fmt.Errorf("valid auth record required to upsert task")
+		return false, false, fmt.Errorf("valid auth record required to upsert task")
 	}
 	if calendarID == "" || strings.TrimSpace(name) == "" {
-		return fmt.Errorf("cannot upsert: calendarID and name are required fields")
+		return false, false, fmt.Errorf("cannot upsert: calendarID and name are required fields")
 	}
 
 	// Verify calendar exists and belongs to this user
@@ -497,20 +552,20 @@ func upsertTaskRecord(
 				Limit(1).
 				One(cal)
 			if err != nil {
-				return fmt.Errorf("calendar %q does not exist: %w", calendarID, err)
+				return false, false, fmt.Errorf("calendar %q does not exist: %w", calendarID, err)
 			}
 			ownerID = cal.UserID()
 			calendarToUserID[calendarID] = ownerID
 		}
 
 		if ownerID != authRecord.Id {
-			return fmt.Errorf("calendar %q belongs to user %q, not %q", calendarID, ownerID, authRecord.Id)
+			return false, false, fmt.Errorf("calendar %q belongs to user %q, not %q", calendarID, ownerID, authRecord.Id)
 		}
 	}
 
 	task := &proxies.Task{}
 
-	err := app.RecordQuery(proxies.CollectionTasks).AndWhere(dbx.HashExp{
+	err = app.RecordQuery(proxies.CollectionTasks).AndWhere(dbx.HashExp{
 		"user": authRecord.Id,
 		"name": name,
 	}).Limit(1).One(task)
@@ -542,7 +597,7 @@ func upsertTaskRecord(
 		// Local Tracking
 		task.SetPriority(proxies.TaskPriorityMed)
 
-		return app.Save(task)
+		return true, false, app.Save(task)
 	}
 
 	// Existing record — only update fields that were actually provided
@@ -552,7 +607,7 @@ func upsertTaskRecord(
 		task.SetCalendarID(calendarID)
 		changes = true
 	}
-	if task.DueDate() != dueDate {
+	if !datesEqual(task.DueDate(), dueDate) {
 		task.SetDueDate(dueDate)
 		changes = true
 	}
@@ -560,7 +615,7 @@ func upsertTaskRecord(
 		task.SetStatus(*status)
 		changes = true
 	}
-	if grade != nil && task.Grade() != *grade {
+	if grade != nil && !gradesEqual(task.Grade(), *grade) {
 		task.SetGrade(*grade)
 		changes = true
 	}
@@ -570,61 +625,80 @@ func upsertTaskRecord(
 	}
 
 	if !changes {
-		return nil
+		return false, false, nil
 	}
 
-	return app.Save(task)
+	return false, true, app.Save(task)
 }
 
 func canvasSync(app core.App) func(event *core.RequestEvent) error {
 	return func(event *core.RequestEvent) error {
-		startTime := time.Now()
 		authRecord, err := getAuth(app, event)
 		if err != nil {
 			return err
 		}
 
-		// Set running status on sync_status
-		_ = updateSyncStatusRunning(app, authRecord.Id, SyncOpCanvas)
-
-		canvasURL, apiToken, err := getCanvasAuth(authRecord, event)
+		resp, err := runCanvasSyncForUser(app, authRecord)
 		if err != nil {
-			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
-			return err
+			return event.BadRequestError(err.Error(), err)
 		}
 
-		httpClient := &http.Client{Timeout: 10 * time.Second}
-		if err := verifyCanvasAuth(httpClient, canvasURL, apiToken, event); err != nil {
-			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
-			return err
-		}
+		return event.JSON(http.StatusOK, resp)
+	}
+}
 
-		rawCourses, err := fetchCanvasCourses(httpClient, canvasURL, apiToken)
-		if err != nil {
-			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
-			return err
-		}
+// runCanvasSyncForUser coordinates the full Canvas LMS fetch and persistence for a specific user.
+func runCanvasSyncForUser(app core.App, authRecord *core.Record) (*CanvasSyncResponse, error) {
+	if authRecord == nil {
+		return nil, fmt.Errorf("authentication required")
+	}
 
-		canvasColors, err := fetchCanvasCourseColors(httpClient, canvasURL, apiToken)
-		if err != nil {
-			return err
-		}
+	startTime := time.Now()
 
-		calendarsCollection, errCal := app.FindCollectionByNameOrId(proxies.CollectionCalendars)
-		if errCal != nil || calendarsCollection == nil {
-			log.Printf("Error: calendars collection does not exist: %v", errCal)
-			return event.InternalServerError("calendars collection does not exist", errCal)
-		}
+	// Set running status on sync_status
+	_ = updateSyncStatusRunning(app, authRecord.Id, SyncOpCanvas)
 
-		tasksCollection, errTask := app.FindCollectionByNameOrId(proxies.CollectionTasks)
-		if errTask != nil || tasksCollection == nil {
-			log.Printf("Error: tasks collection does not exist: %v", errTask)
-			return event.InternalServerError("tasks collection does not exist", errTask)
-		}
+	canvasURL, apiToken, err := getCanvasAuth(authRecord)
+	if err != nil {
+		_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
+		return nil, err
+	}
 
-		canvasCourseToCalendarID := make(map[string]string)
-		calendarToUserID := make(map[string]string)
-		syncedCourseCount := 0
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	if err := verifyCanvasAuth(httpClient, canvasURL, apiToken); err != nil {
+		_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
+		return nil, err
+	}
+
+	rawCourses, err := fetchCanvasCourses(httpClient, canvasURL, apiToken)
+	if err != nil {
+		_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
+		return nil, err
+	}
+
+	canvasColors, err := fetchCanvasCourseColors(httpClient, canvasURL, apiToken)
+	if err != nil {
+		_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
+		return nil, err
+	}
+
+	calendarsCollection, errCal := app.FindCollectionByNameOrId(proxies.CollectionCalendars)
+	if errCal != nil || calendarsCollection == nil {
+		err := fmt.Errorf("calendars collection does not exist: %w", errCal)
+		_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
+		return nil, err
+	}
+
+	tasksCollection, errTask := app.FindCollectionByNameOrId(proxies.CollectionTasks)
+	if errTask != nil || tasksCollection == nil {
+		err := fmt.Errorf("tasks collection does not exist: %w", errTask)
+		_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", err.Error(), time.Since(startTime).Milliseconds())
+		return nil, err
+	}
+
+	canvasCourseToCalendarID := make(map[string]string)
+	calendarToUserID := make(map[string]string)
+	syncedCourseCount := 0
 		fallbackPalette := []string{"#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#ec4899", "#06b6d4"}
 
 		for index, courseData := range rawCourses {
@@ -655,6 +729,15 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 				},
 			)
 
+			startFormatted := ""
+			if courseData.ParsedStartAt != nil {
+				startFormatted = courseData.ParsedStartAt.UTC().Format("2006-01-02 15:04:05.000Z")
+			}
+			endFormatted := ""
+			if courseData.ParsedEndAt != nil {
+				endFormatted = courseData.ParsedEndAt.UTC().Format("2006-01-02 15:04:05.000Z")
+			}
+
 			calendarID := ""
 			if existingCalendarRecord != nil {
 				cal := proxies.NewCalendar(existingCalendarRecord)
@@ -672,6 +755,14 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 					cal.SetCourseID(courseID)
 					needsPersist = true
 				}
+				if !datesEqual(cal.StartDate(), startFormatted) {
+					cal.SetStartDate(startFormatted)
+					needsPersist = true
+				}
+				if !datesEqual(cal.EndDate(), endFormatted) {
+					cal.SetEndDate(endFormatted)
+					needsPersist = true
+				}
 				if needsPersist {
 					_ = app.Save(cal)
 				}
@@ -683,6 +774,12 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 				newCal.SetSource(proxies.CalendarSourceCanvas)
 				newCal.SetVisible(true)
 				newCal.SetCourseID(courseID)
+				if startFormatted != "" {
+					newCal.SetStartDate(startFormatted)
+				}
+				if endFormatted != "" {
+					newCal.SetEndDate(endFormatted)
+				}
 				if err := app.Save(newCal); err != nil {
 					log.Printf("Failed to insert calendar for course %s: %v", courseName, err)
 					continue
@@ -695,7 +792,9 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 			syncedCourseCount++
 		}
 
-		upsertedTaskCount := 0
+		evaluatedTaskCount := 0
+		tasksCreated := 0
+		tasksUpdated := 0
 
 		for courseID, calendarID := range canvasCourseToCalendarID {
 			assignments, err := fetchCanvasCourseAssignments(httpClient, canvasURL, courseID, apiToken)
@@ -743,8 +842,14 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 					sourceLinkPtr = &sourceLink
 				}
 
-				if err := upsertTaskRecord(app, tasksCollection, authRecord, calendarToUserID, calendarID, assignmentTitle, dueAtTimestamp, &taskStatus, gradePtr, sourceLinkPtr); err == nil {
-					upsertedTaskCount++
+				if created, updated, err := upsertTaskRecord(app, tasksCollection, authRecord, calendarToUserID, calendarID, assignmentTitle, dueAtTimestamp, &taskStatus, gradePtr, sourceLinkPtr); err == nil {
+					evaluatedTaskCount++
+					if created {
+						tasksCreated++
+					}
+					if updated {
+						tasksUpdated++
+					}
 				}
 			}
 		}
@@ -755,7 +860,9 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 
 		plannerItems, err := fetchCanvasPlannerItems(httpClient, canvasURL, apiToken, searchStartDate, searchEndDate)
 		if err != nil {
-			return event.BadRequestError("Failed to fetch Canvas planner items", err)
+			errPlanner := fmt.Errorf("failed to fetch Canvas planner items: %w", err)
+			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpCanvas, "error", "", errPlanner.Error(), time.Since(startTime).Milliseconds())
+			return nil, errPlanner
 		}
 
 		for _, plannerItem := range plannerItems {
@@ -850,24 +957,62 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 						"calendar = {:cal} && title = {:title} && (announcement = true || deadline = true)",
 						map[string]any{"cal": calendarID, "title": taskTitle},
 					)
+					desc := ""
+					if d, ok := plannableData["message"].(string); ok {
+						desc = d
+					}
+
 					var targetAnn *proxies.Event
+					needsAnnSave := false
 					if existingAnn != nil {
 						targetAnn = proxies.NewEvent(existingAnn)
+						if targetAnn.Title() != taskTitle {
+							targetAnn.SetTitle(taskTitle)
+							needsAnnSave = true
+						}
+						if !datesEqual(targetAnn.Start(), dueAtTimestamp) {
+							targetAnn.SetStart(dueAtTimestamp)
+							needsAnnSave = true
+						}
+						if !datesEqual(targetAnn.End(), dueAtTimestamp) {
+							targetAnn.SetEnd(dueAtTimestamp)
+							needsAnnSave = true
+						}
+						if targetAnn.AllDay() != false {
+							targetAnn.SetAllDay(false)
+							needsAnnSave = true
+						}
+						if !targetAnn.Announcement() {
+							targetAnn.SetAnnouncement(true)
+							needsAnnSave = true
+						}
+						if targetAnn.Deadline() {
+							targetAnn.SetDeadline(false)
+							needsAnnSave = true
+						}
+						if desc != "" && targetAnn.Description() != desc {
+							targetAnn.SetDescription(desc)
+							needsAnnSave = true
+						}
 					} else {
 						targetAnn = proxies.NewEventRecord(eventsCollection)
 						targetAnn.SetCalendarID(calendarID)
+						targetAnn.SetTitle(taskTitle)
+						targetAnn.SetStart(dueAtTimestamp)
+						targetAnn.SetEnd(dueAtTimestamp)
+						targetAnn.SetAllDay(false)
+						targetAnn.SetAnnouncement(true)
+						targetAnn.SetDeadline(false) // BE CAREFUL: Never mark as both announcement and deadline!
+						if desc != "" {
+							targetAnn.SetDescription(desc)
+						}
+						needsAnnSave = true
 					}
-					targetAnn.SetTitle(taskTitle)
-					targetAnn.SetStart(dueAtTimestamp)
-					targetAnn.SetEnd(dueAtTimestamp)
-					targetAnn.SetAllDay(false)
-					targetAnn.SetAnnouncement(true)
-					targetAnn.SetDeadline(false) // BE CAREFUL: Never mark as both announcement and deadline!
-					if desc, ok := plannableData["message"].(string); ok && desc != "" {
-						targetAnn.SetDescription(desc)
-					}
-					if err := app.Save(targetAnn); err != nil {
-						log.Printf("Failed to save announcement event %s: %v", taskTitle, err)
+
+					if needsAnnSave {
+						if err := app.Save(targetAnn); err != nil {
+							log.Printf("Failed to save announcement event %s: %v", taskTitle, err)
+						}
 					}
 				}
 				continue
@@ -888,7 +1033,13 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 				}
 				taskStatusPtr = &st
 
-				if g := formatGradeString(submissionsData, 0); g != "" {
+				pointsPossible := 0.0
+				if plannableData != nil {
+					if pp, ok := plannableData["points_possible"].(float64); ok {
+						pointsPossible = pp
+					}
+				}
+				if g := formatGradeString(submissionsData, pointsPossible); g != "" {
 					gradePtr = &g
 				}
 			}
@@ -899,14 +1050,25 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 				sourceLinkPtr = &sourceLink
 			}
 
-			if err := upsertTaskRecord(app, tasksCollection, authRecord, calendarToUserID, calendarID, taskTitle, dueAtTimestamp, taskStatusPtr, gradePtr, sourceLinkPtr); err == nil {
-				upsertedTaskCount++
+			if created, updated, err := upsertTaskRecord(app, tasksCollection, authRecord, calendarToUserID, calendarID, taskTitle, dueAtTimestamp, taskStatusPtr, gradePtr, sourceLinkPtr); err == nil {
+				evaluatedTaskCount++
+				if created {
+					tasksCreated++
+				}
+				if updated {
+					tasksUpdated++
+				}
 			} else {
 				log.Printf("Failed to upsert task %s: %v", taskTitle, err)
 			}
 		}
 
-		feedbackMsg := fmt.Sprintf("Synced %d courses and %d tasks from Canvas.", syncedCourseCount, upsertedTaskCount)
+		feedbackMsg := ""
+		if tasksCreated == 0 && tasksUpdated == 0 {
+			feedbackMsg = fmt.Sprintf("Canvas coursework up to date (%d courses, %d tasks evaluated).", syncedCourseCount, evaluatedTaskCount)
+		} else {
+			feedbackMsg = fmt.Sprintf("Synced %d courses from Canvas (%d created, %d updated across %d tasks).", syncedCourseCount, tasksCreated, tasksUpdated, evaluatedTaskCount)
+		}
 		_ = updateSyncStatusFinished(
 			app,
 			authRecord.Id,
@@ -917,11 +1079,12 @@ func canvasSync(app core.App) func(event *core.RequestEvent) error {
 			time.Since(startTime).Milliseconds(),
 		)
 
-		return event.JSON(http.StatusOK, CanvasSyncResponse{
+		return &CanvasSyncResponse{
 			Success:       true,
 			CoursesSynced: syncedCourseCount,
-			TasksSynced:   upsertedTaskCount,
+			TasksSynced:   evaluatedTaskCount,
+			TasksCreated:  tasksCreated,
+			TasksUpdated:  tasksUpdated,
 			Message:       feedbackMsg,
-		})
+		}, nil
 	}
-}

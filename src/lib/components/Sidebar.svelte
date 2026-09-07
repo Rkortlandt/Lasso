@@ -16,7 +16,7 @@
 	import ChevronUp from "@lucide/svelte/icons/chevron-up";
 	import LogOutIcon from "@lucide/svelte/icons/log-out";
 	import { dayState } from "$lib/dayState.svelte";
-	import { syncState } from "$lib/syncState.svelte";
+	import { syncController } from "$lib/syncController.svelte";
 	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
 	import CheckIcon from "@lucide/svelte/icons/check";
 	import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -107,19 +107,19 @@
 		return isNaN(d.getTime()) ? null : d;
 	}
 
-	const isAnySyncing = $derived(syncState.isAnySyncing);
+	const isAnySyncing = $derived(syncController.isAnySyncing);
 
 	const isAnyConnected = $derived(
-		syncState.isCanvasConnected || syncState.isGoogleConnected,
+		syncController.isCanvasConnected || syncController.isGoogleConnected,
 	);
 
 	const oldestSyncDate = $derived.by(() => {
 		const timestamps: number[] = [];
-		if (syncState.isCanvasConnected && dataState.canvasSyncedAt) {
+		if (syncController.isCanvasConnected && dataState.canvasSyncedAt) {
 			const d = parseSyncDate(dataState.canvasSyncedAt);
 			if (d) timestamps.push(d.getTime());
 		}
-		if (syncState.isGoogleConnected) {
+		if (syncController.isGoogleConnected) {
 			if (dataState.googleImportSyncedAt) {
 				const d = parseSyncDate(dataState.googleImportSyncedAt);
 				if (d) timestamps.push(d.getTime());
@@ -142,8 +142,28 @@
 			: null,
 	);
 
+	const syncErrorMessage = $derived(
+		syncController.syncAllError ||
+			dataState.canvasSyncError ||
+			dataState.googleImportError ||
+			dataState.googleExportError ||
+			null,
+	);
+	const hasSyncError = $derived(Boolean(syncErrorMessage));
+
 	const syncTooltip = $derived.by(() => {
-		if (isAnySyncing) return "Syncing in progress...";
+		if (isAnySyncing) {
+			if (syncController.syncingStage === 1) {
+				return "Stage 1: Importing coursework and schedules...";
+			}
+			if (syncController.syncingStage === 2) {
+				return "Stage 2: Exporting deadlines to Google Calendar...";
+			}
+			return "Syncing in progress...";
+		}
+		if (hasSyncError) {
+			return `Sync issue: ${syncErrorMessage} — Click to retry`;
+		}
 		if (!isAnyConnected) return "No sync services connected";
 		if (oldestSyncTimeFormatted) {
 			return `Last sync: ${oldestSyncTimeFormatted} — Click to sync all`;
@@ -153,7 +173,7 @@
 
 	function handleFooterSyncClick() {
 		if (isAnyConnected && !isAnySyncing) {
-			syncState.syncAll().catch(() => {});
+			syncController.syncAll().catch(() => {});
 		}
 	}
 
@@ -331,6 +351,10 @@
 						<RefreshCwIcon
 							class="size-2.5 animate-spin text-primary shrink-0"
 						/>
+					{:else if hasSyncError}
+						<span
+							class="size-1.5 rounded-full bg-destructive shadow-[0_0_5px_rgba(239,68,68,0.7)] shrink-0"
+						></span>
 					{:else if isAnyConnected}
 						<span
 							class="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)] shrink-0"
@@ -342,9 +366,21 @@
 
 					<!-- Right: Last Sync Time / Status -->
 					<div class="flex-1 text-left pl-2 truncate">
-						<span class="text-[10px] text-muted-foreground/80 tabular-nums">
+						<span
+							class="text-[10px] tabular-nums {hasSyncError && !isAnySyncing
+								? 'text-destructive font-medium'
+								: 'text-muted-foreground/80'}"
+						>
 							{#if isAnySyncing}
-								syncing...
+								{#if syncController.syncingStage === 1}
+									importing...
+								{:else if syncController.syncingStage === 2}
+									exporting...
+								{:else}
+									syncing...
+								{/if}
+							{:else if hasSyncError}
+								error
 							{:else if oldestSyncTimeFormatted}
 								{oldestSyncTimeFormatted}
 							{:else if isAnyConnected}

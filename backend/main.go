@@ -1,6 +1,7 @@
 package main
 
 import (
+	"backend/proxies"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,6 +67,8 @@ type CanvasSyncResponse struct {
 	Success       bool   `json:"success"`
 	CoursesSynced int    `json:"coursesSynced"`
 	TasksSynced   int    `json:"tasksSynced"`
+	TasksCreated  int    `json:"tasksCreated"`
+	TasksUpdated  int    `json:"tasksUpdated"`
 	Message       string `json:"message"`
 }
 
@@ -119,7 +122,8 @@ func normalizeIDString(v any) string {
 }
 
 func refreshGoogleToken(app core.App, authRecord *core.Record) (string, error) {
-	refreshToken := authRecord.GetString("google_refresh_token")
+	user := proxies.NewUser(authRecord)
+	refreshToken := user.GoogleRefreshToken()
 	if refreshToken == "" {
 		return "", fmt.Errorf("no refresh token available")
 	}
@@ -283,6 +287,54 @@ func main() {
 		return e.Next()
 	})
 
+	// Flag matching google_sync_registry rows as pending_delete when a task is deleted
+	app.OnRecordDelete("tasks").BindFunc(func(e *core.RecordEvent) error {
+		if e.Record != nil && e.Record.Id != "" {
+			entries, err := app.FindRecordsByFilter(
+				proxies.CollectionSyncRegistry,
+				"entity_type = 'task' && entity_id = {:id} && status = 'active'",
+				"",
+				0,
+				0,
+				map[string]any{"id": e.Record.Id},
+			)
+			if err == nil {
+				for _, rec := range entries {
+					reg := proxies.NewSyncRegistry(rec)
+					reg.SetStatus(proxies.SyncRegistryStatusPendingDelete)
+					if err := app.Save(reg); err != nil {
+						log.Printf("Warning: failed to mark task %s as pending_delete in sync registry: %v", e.Record.Id, err)
+					}
+				}
+			}
+		}
+		return e.Next()
+	})
+
+	// Flag matching google_sync_registry rows as pending_delete when an event is deleted
+	app.OnRecordDelete("events").BindFunc(func(e *core.RecordEvent) error {
+		if e.Record != nil && e.Record.Id != "" {
+			entries, err := app.FindRecordsByFilter(
+				proxies.CollectionSyncRegistry,
+				"entity_type = 'event' && entity_id = {:id} && status = 'active'",
+				"",
+				0,
+				0,
+				map[string]any{"id": e.Record.Id},
+			)
+			if err == nil {
+				for _, rec := range entries {
+					reg := proxies.NewSyncRegistry(rec)
+					reg.SetStatus(proxies.SyncRegistryStatusPendingDelete)
+					if err := app.Save(reg); err != nil {
+						log.Printf("Warning: failed to mark event %s as pending_delete in sync registry: %v", e.Record.Id, err)
+					}
+				}
+			}
+		}
+		return e.Next()
+	})
+
 	// Register custom endpoints for Canvas LMS and Google Calendar
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
 		// Ensure grade and source_link fields exist on tasks collection
@@ -328,8 +380,10 @@ func main() {
 			_ = app.Save(eventsCol)
 		}
 
-		// Ensure 'todo' and 'internal' exist in calendars source select field options
+		// Ensure 'todo' and 'internal' exist in calendars source select field options,
+		// and ensure 'start_date' and 'end_date' text fields exist.
 		if calCol, err := app.FindCollectionByNameOrId("calendars"); err == nil && calCol != nil {
+			modified := false
 			if f := calCol.Fields.GetByName("source"); f != nil {
 				if selField, ok := f.(*core.SelectField); ok {
 					hasTodo := false
@@ -342,7 +396,6 @@ func main() {
 							hasInternal = true
 						}
 					}
-					modified := false
 					if !hasTodo {
 						selField.Values = append(selField.Values, "todo")
 						modified = true
@@ -351,14 +404,95 @@ func main() {
 						selField.Values = append(selField.Values, "internal")
 						modified = true
 					}
-					if modified {
-						if err := app.Save(calCol); err != nil {
-							log.Printf("Failed to update calendars source select field: %v", err)
-						} else {
-							log.Printf("Successfully updated calendars source options to include 'todo' and 'internal'")
-						}
-					}
 				}
+			}
+			for _, dateFieldName := range []string{"start_date", "end_date"} {
+				if calCol.Fields.GetByName(dateFieldName) == nil {
+					calCol.Fields.Add(&core.DateField{
+						Name: dateFieldName,
+					})
+					modified = true
+				}
+			}
+			if calCol.Fields.GetByName("google_label_id") == nil {
+				calCol.Fields.Add(&core.TextField{
+					Name: "google_label_id",
+				})
+				modified = true
+			}
+			if modified {
+				if err := app.Save(calCol); err != nil {
+					log.Printf("Failed to update calendars collection schema: %v", err)
+				} else {
+					log.Printf("Successfully updated calendars collection schema")
+				}
+			}
+		}
+
+		// Ensure google_tags_synced_at and google_export_calendar_id exist on sync_status collection
+		if syncCol, err := app.FindCollectionByNameOrId(proxies.CollectionSyncStatus); err == nil && syncCol != nil {
+			modified := false
+			if syncCol.Fields.GetByName("google_tags_synced_at") == nil {
+				syncCol.Fields.Add(&core.DateField{
+					Name: "google_tags_synced_at",
+				})
+				modified = true
+			}
+			if syncCol.Fields.GetByName("google_export_calendar_id") == nil {
+				syncCol.Fields.Add(&core.TextField{
+					Name: "google_export_calendar_id",
+				})
+				modified = true
+			}
+			if modified {
+				_ = app.Save(syncCol)
+			}
+		}
+
+		// Ensure google_sync_registry collection exists and has necessary indexes
+		if regCol, err := app.FindCollectionByNameOrId(proxies.CollectionSyncRegistry); err != nil || regCol == nil {
+			usersCol, _ := app.FindCollectionByNameOrId("users")
+			col := core.NewCollection(proxies.CollectionSyncRegistry, proxies.CollectionSyncRegistry)
+			if usersCol != nil {
+				col.Fields.Add(&core.RelationField{
+					Name:          "user",
+					CollectionId:  usersCol.Id,
+					CascadeDelete: true,
+					Required:      true,
+				})
+			}
+			col.Fields.Add(&core.TextField{Name: "entity_id", Required: true})
+			col.Fields.Add(&core.SelectField{
+				Name:     "entity_type",
+				Values:   []string{"task", "event"},
+				Required: true,
+			})
+			col.Fields.Add(&core.TextField{Name: "google_calendar_id", Required: true})
+			col.Fields.Add(&core.TextField{Name: "google_event_id", Required: true})
+			col.Fields.Add(&core.DateField{Name: "synced_at", Required: true})
+			col.Fields.Add(&core.SelectField{
+				Name:     "status",
+				Values:   []string{"pending_delete", "deleted", "active"},
+				Required: true,
+			})
+			col.AddIndex("idx_sync_reg_unique", true, "`user`, `google_calendar_id`, `entity_type`, `entity_id`", "")
+			col.AddIndex("idx_sync_reg_status", false, "`user`, `status`", "")
+			emptyRule := "@request.auth.id = user.id"
+			col.ListRule = &emptyRule
+			col.ViewRule = &emptyRule
+			_ = app.Save(col)
+		} else {
+			colModified := false
+			if regCol.GetIndex("idx_sync_reg_unique") == "" {
+				regCol.AddIndex("idx_sync_reg_unique", true, "`user`, `google_calendar_id`, `entity_type`, `entity_id`", "")
+				colModified = true
+			}
+			if regCol.GetIndex("idx_sync_reg_status") == "" {
+				regCol.AddIndex("idx_sync_reg_status", false, "`user`, `status`", "")
+				colModified = true
+			}
+			if colModified {
+				_ = app.Save(regCol)
 			}
 		}
 
@@ -378,6 +512,12 @@ func main() {
 				}
 			}
 		}
+
+		// Automatically recover and re-run any syncs that were interrupted by an abrupt shutdown or crash
+		go func() {
+			time.Sleep(1 * time.Second)
+			recoverInterruptedSyncs(app)
+		}()
 
 		se.Router.POST("/api/calendar/nickname", setNickname(app))
 		se.Router.POST("/api/todo/ensure", handleEnsureTodoCalendar(app))
@@ -463,17 +603,19 @@ func setNickname(app core.App) func(e *core.RequestEvent) error {
 			)
 
 			if cal != nil {
-				cal.Set("nickname", trimmedNickname)
-				if err := app.Save(cal); err != nil {
-					log.Printf("Failed to update calendar nickname on record %s: %v", cal.Id, err)
+				calProxy := proxies.NewCalendar(cal)
+				calProxy.SetNickname(trimmedNickname)
+				if err := app.Save(calProxy); err != nil {
+					log.Printf("Failed to update calendar nickname on record %s: %v", calProxy.Id, err)
 				} else {
-					log.Printf("Successfully updated nickname '%s' on calendar %s (%s)", trimmedNickname, cal.Id, cal.GetString("name"))
+					log.Printf("Successfully updated nickname '%s' on calendar %s (%s)", trimmedNickname, calProxy.Id, calProxy.Name())
 				}
 			} else {
 				// If calendar doesn't have course_id yet, find by Canvas course name
 				if authRecord != nil {
-					canvasURL := authRecord.GetString("canvas_url")
-					canvasToken := authRecord.GetString("canvas_token")
+					authUser := proxies.NewUser(authRecord)
+					canvasURL := authUser.CanvasURL()
+					canvasToken := authUser.CanvasToken()
 					if canvasURL != "" && canvasToken != "" {
 						coursesURL := fmt.Sprintf("%s/api/v1/courses?per_page=100", canvasURL)
 						client := &http.Client{Timeout: 10 * time.Second}
@@ -489,14 +631,15 @@ func setNickname(app core.App) func(e *core.RequestEvent) error {
 										if normalizeIDString(c["id"]) == targetID {
 											cName, _ := c["name"].(string)
 											cName = strings.TrimSpace(cName)
-											matchingCal, _ := app.FindFirstRecordByFilter(
+											matchingCalRec, _ := app.FindFirstRecordByFilter(
 												"calendars",
 												"user = {:user} && name = {:name}",
 												map[string]any{"user": userID, "name": cName},
 											)
-											if matchingCal != nil {
-												matchingCal.Set("course_id", targetID)
-												matchingCal.Set("nickname", trimmedNickname)
+											if matchingCalRec != nil {
+												matchingCal := proxies.NewCalendar(matchingCalRec)
+												matchingCal.SetCourseID(targetID)
+												matchingCal.SetNickname(trimmedNickname)
 												_ = app.Save(matchingCal)
 												log.Printf("Found calendar by Canvas course name %s and saved nickname '%s'", cName, trimmedNickname)
 											}
@@ -539,13 +682,14 @@ func retriveCanvasNicknames(app core.App) func(e *core.RequestEvent) error {
 			)
 			if err == nil {
 				for _, r := range records {
-					nick := r.GetString("nickname")
+					cal := proxies.NewCalendar(r)
+					nick := cal.Nickname()
 					if nick != "" {
-						if cid := r.GetString("course_id"); cid != "" {
+						if cid := cal.CourseID(); cid != "" {
 							nicknames[cid] = nick
 						}
-						nicknames[r.GetString("name")] = nick
-						nicknames[r.Id] = nick
+						nicknames[cal.Name()] = nick
+						nicknames[cal.Id] = nick
 					}
 				}
 			}
@@ -687,24 +831,24 @@ func ensureUserTodoCalendar(app core.App, userID string) (*core.Record, error) {
 		return cal, nil
 	}
 
-	col, err := app.FindCollectionByNameOrId("calendars")
+	col, err := app.FindCollectionByNameOrId(proxies.CollectionCalendars)
 	if err != nil {
 		return nil, fmt.Errorf("calendars collection not found: %w", err)
 	}
 
-	newCal := core.NewRecord(col)
-	newCal.Set("user", userID)
-	newCal.Set("name", "To Do")
-	newCal.Set("source", "todo")
-	newCal.Set("color", "#10b981")
-	newCal.Set("visible", true)
+	newCal := proxies.NewCalendarRecord(col)
+	newCal.SetUserID(userID)
+	newCal.SetName("To Do")
+	newCal.SetSource(proxies.CalendarSourceTodo)
+	newCal.SetColor("#10b981")
+	newCal.SetVisible(true)
 
 	if err := app.Save(newCal); err != nil {
 		return nil, fmt.Errorf("failed to create To Do calendar: %w", err)
 	}
 
 	log.Printf("Created default To Do calendar %s for user %s", newCal.Id, userID)
-	return newCal, nil
+	return newCal.ProxyRecord(), nil
 }
 
 // handleEnsureTodoCalendar handles POST /api/todo/ensure to create or fetch the user's To Do calendar.

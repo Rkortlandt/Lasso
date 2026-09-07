@@ -15,6 +15,7 @@ import (
 
 	"backend/proxies"
 
+	"github.com/google/uuid"
 	"github.com/pocketbase/pocketbase/core"
 )
 
@@ -40,6 +41,7 @@ type GoogleEventPayload struct {
 	Start              GoogleDateOrDateTime           `json:"start"`
 	End                GoogleDateOrDateTime           `json:"end"`
 	ColorID            string                         `json:"colorId,omitempty"`
+	EventLabelID       string                         `json:"eventLabelId,omitempty"`
 	ExtendedProperties *GoogleEventExtendedProperties `json:"extendedProperties,omitempty"`
 }
 
@@ -174,6 +176,129 @@ func fetchGoogleCalendarLabels(app core.App, authRecord *core.Record, calendarID
 	return labels
 }
 
+// getCalendarGoogleLabelID returns a deterministic RFC 4122 UUID v5 for a calendar.
+func getCalendarGoogleLabelID(calID string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("lasso:calendar:"+calID)).String()
+}
+
+// reconcileCalendarTagsIfDirty checks if user labels or coursework calendars were updated
+// since the last tag sync. If unchanged, it makes 0 Google API calls.
+// If changed, it updates the Google Calendar's labelProperties.eventLabels with 1 PATCH request.
+func reconcileCalendarTagsIfDirty(
+	app core.App,
+	authRecord *core.Record,
+	calendarID string,
+	syncStatus *proxies.SyncStatus,
+	courseCalendars []*proxies.Calendar,
+	userLabels []*proxies.Label,
+) error {
+	lastTagSyncStr := syncStatus.GoogleTagsSyncedAt()
+	needsUpdate := false
+
+	if lastTagSyncStr == "" {
+		needsUpdate = true
+	} else {
+		lastTagSync, err := time.Parse(time.RFC3339, lastTagSyncStr)
+		if err != nil {
+			needsUpdate = true
+		} else {
+			for _, cal := range courseCalendars {
+				if cal.GetDateTime("updated").Time().After(lastTagSync) {
+					needsUpdate = true
+					break
+				}
+			}
+			if !needsUpdate {
+				for _, lbl := range userLabels {
+					if lbl.GetDateTime("updated").Time().After(lastTagSync) {
+						needsUpdate = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if !needsUpdate {
+		return nil // 0 Google API calls!
+	}
+
+	labelByID := make(map[string]*proxies.Label)
+	for _, lbl := range userLabels {
+		labelByID[lbl.Id] = lbl
+	}
+
+	var updatedEventLabels []GoogleEventLabel
+	for _, cal := range courseCalendars {
+		if cal.Source() != proxies.CalendarSourceCanvas && cal.Source() != proxies.CalendarSourceInternal && cal.Source() != proxies.CalendarSourceTodo {
+			continue
+		}
+
+		gid := strings.TrimSpace(cal.GoogleLabelID())
+		if gid == "" {
+			gid = getCalendarGoogleLabelID(cal.Id)
+			cal.SetGoogleLabelID(gid)
+			if err := app.Save(cal); err != nil {
+				log.Printf("Warning: failed to save google_label_id for calendar %s: %v", cal.Id, err)
+			}
+		}
+
+		labelName := ""
+		labelColor := cal.Color()
+		if cal.LabelID() != "" {
+			if lbl := labelByID[cal.LabelID()]; lbl != nil {
+				if lbl.Name() != "" {
+					labelName = lbl.Name()
+				}
+				if lbl.Color() != "" {
+					labelColor = lbl.Color()
+				}
+			}
+		}
+		if labelName == "" {
+			labelName = extractCourseTag(cal.Name(), cal.Nickname())
+		}
+		if labelColor == "" {
+			labelColor = "#2563eb"
+		}
+
+		updatedEventLabels = append(updatedEventLabels, GoogleEventLabel{
+			ID:              gid,
+			Name:            labelName,
+			BackgroundColor: labelColor,
+		})
+	}
+
+	patchPayload := map[string]any{
+		"labelProperties": map[string]any{
+			"eventLabels": updatedEventLabels,
+		},
+	}
+	body, err := json.Marshal(patchPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal labelProperties: %w", err)
+	}
+
+	calURL := fmt.Sprintf("https://www.googleapis.com/calendar/v3/calendars/%s", url.PathEscape(calendarID))
+	resp, _, err := makeGoogleAPIRequest(app, authRecord, "PATCH", calURL, body)
+	if err != nil {
+		return fmt.Errorf("failed to patch calendar labelProperties: %w", err)
+	}
+	if resp != nil {
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("PATCH calendar labelProperties failed (%d): %s", resp.StatusCode, string(bodyBytes))
+		}
+	}
+
+	syncStatus.SetGoogleTagsSyncedAt(time.Now().UTC().Format(time.RFC3339))
+	_ = app.Save(syncStatus)
+	log.Printf("Successfully updated %d static calendar labels on Google calendar %s", len(updatedEventLabels), calendarID)
+	return nil
+}
+
+
 type GoogleCalendarsRequest struct {
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken"`
@@ -220,7 +345,7 @@ func handleGoogleCalendars(app core.App) func(e *core.RequestEvent) error {
 		localNicknames := map[string]string{}
 		if authRecord != nil {
 			calRecords, err := app.FindRecordsByFilter(
-				"calendars",
+				proxies.CollectionCalendars,
 				"user = {:user} && nickname != ''",
 				"",
 				200,
@@ -229,17 +354,20 @@ func handleGoogleCalendars(app core.App) func(e *core.RequestEvent) error {
 			)
 			if err == nil {
 				for _, r := range calRecords {
-					nick := r.GetString("nickname")
+					cal := proxies.NewCalendar(r)
+					nick := cal.Nickname()
 					if nick != "" {
-						if cid := r.GetString("calendar_id"); cid != "" {
+						if cid := cal.CalendarID(); cid != "" {
 							localNicknames[cid] = nick
 						}
-						localNicknames[r.GetString("name")] = nick
-						localNicknames[r.Id] = nick
+						localNicknames[cal.Name()] = nick
+						localNicknames[cal.Id] = nick
 					}
 				}
 			}
 		}
+
+		authUser := proxies.NewUser(authRecord)
 
 		resp, _, err := makeGoogleAPIRequest(app, authRecord, "GET", "https://www.googleapis.com/calendar/v3/users/me/calendarList", nil)
 		if err != nil {
@@ -247,7 +375,7 @@ func handleGoogleCalendars(app core.App) func(e *core.RequestEvent) error {
 				Success:     false,
 				Connected:   false,
 				NeedsReauth: true,
-				Email:       authRecord.GetString("email"),
+				Email:       authUser.Email(),
 				Message:     "Google Calendar credentials not found or expired. Please connect Google Calendar.",
 			})
 		}
@@ -258,7 +386,7 @@ func handleGoogleCalendars(app core.App) func(e *core.RequestEvent) error {
 				Success:     false,
 				Connected:   false,
 				NeedsReauth: true,
-				Email:       authRecord.GetString("email"),
+				Email:       authUser.Email(),
 				Message:     fmt.Sprintf("Google rejected credentials (HTTP %d). Please reconnect Google Calendar.", resp.StatusCode),
 			})
 		}
@@ -324,13 +452,14 @@ func handleGoogleCalendars(app core.App) func(e *core.RequestEvent) error {
 			// Sync color to PocketBase calendar record if it exists
 			if authRecord != nil && colorHex != "" {
 				if calRec, errRec := app.FindFirstRecordByFilter(
-					"calendars",
+					proxies.CollectionCalendars,
 					"user = {:user} && calendar_id = {:cid}",
 					map[string]any{"user": authRecord.Id, "cid": cid},
 				); errRec == nil && calRec != nil {
-					if calRec.GetString("color") != colorHex {
-						calRec.Set("color", colorHex)
-						_ = app.Save(calRec)
+					cal := proxies.NewCalendar(calRec)
+					if cal.Color() != colorHex {
+						cal.SetColor(colorHex)
+						_ = app.Save(cal)
 					}
 				}
 			}
@@ -338,12 +467,12 @@ func handleGoogleCalendars(app core.App) func(e *core.RequestEvent) error {
 			calendars = append(calendars, entry)
 		}
 
-		authRecord.Set("google_connected", true)
-		_ = app.Save(authRecord)
+		authUser.SetGoogleConnected(true)
+		_ = app.Save(authUser)
 
-		userEmail := authRecord.GetString("google_email")
+		userEmail := authUser.GoogleEmail()
 		if userEmail == "" {
-			userEmail = authRecord.GetString("email")
+			userEmail = authUser.Email()
 		}
 
 		return e.JSON(http.StatusOK, GetGoogleCalendarsResponse{
@@ -429,14 +558,31 @@ func parseDateString(dateStr string) (time.Time, bool, error) {
 }
 
 // =============================================================================
-// Authenticated Google API Request Helper with Auto-Refresh
+// Authenticated Google API Request Helper with Auto-Refresh & HTTP/2 Pooling
 // =============================================================================
 
+var (
+	googleSharedHTTPClient = &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 20,
+			IdleConnTimeout:     90 * time.Second,
+			ForceAttemptHTTP2:   true,
+		},
+		Timeout: 25 * time.Second,
+	}
+	googleTokenRefreshMu sync.Mutex
+	googleWriteLimiter   = time.NewTicker(time.Second / 4) // Strict cap: 4 writes / sec
+)
+
 func makeGoogleAPIRequest(app core.App, authRecord *core.Record, method string, endpoint string, body []byte) (*http.Response, string, error) {
-	token := authRecord.GetString("google_access_token")
+	authUser := proxies.NewUser(authRecord)
+	token := authUser.GoogleAccessToken()
 	if token == "" {
-		if authRecord.GetString("google_refresh_token") != "" {
+		if authUser.GoogleRefreshToken() != "" {
+			googleTokenRefreshMu.Lock()
 			refreshed, err := refreshGoogleToken(app, authRecord)
+			googleTokenRefreshMu.Unlock()
 			if err == nil && refreshed != "" {
 				token = refreshed
 			}
@@ -446,7 +592,11 @@ func makeGoogleAPIRequest(app core.App, authRecord *core.Record, method string, 
 		return nil, "", fmt.Errorf("no valid Google OAuth token found")
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	// Enforce strict rate limit on write requests (POST, PATCH, DELETE, PUT): max 9 writes / second
+	if method != http.MethodGet && method != http.MethodHead {
+		<-googleWriteLimiter.C
+	}
+
 	var bodyReader io.Reader
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
@@ -462,19 +612,34 @@ func makeGoogleAPIRequest(app core.App, authRecord *core.Record, method string, 
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := client.Do(req)
+	resp, err := googleSharedHTTPClient.Do(req)
 	if err != nil {
 		return nil, token, err
 	}
 
 	// If token expired (401), attempt refresh and retry once
 	if resp.StatusCode == http.StatusUnauthorized {
+		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-		refreshed, errRef := refreshGoogleToken(app, authRecord)
-		if errRef != nil || refreshed == "" {
-			return nil, token, fmt.Errorf("google token expired and refresh failed: %v", errRef)
+
+		googleTokenRefreshMu.Lock()
+		refreshedUser := proxies.NewUser(authRecord)
+		currentToken := refreshedUser.GoogleAccessToken()
+		if currentToken != "" && currentToken != token {
+			token = currentToken
+			googleTokenRefreshMu.Unlock()
+		} else {
+			refreshed, errRef := refreshGoogleToken(app, authRecord)
+			googleTokenRefreshMu.Unlock()
+			if errRef != nil || refreshed == "" {
+				return nil, token, fmt.Errorf("google token expired and refresh failed: %v", errRef)
+			}
+			token = refreshed
 		}
-		token = refreshed
+
+		if method != http.MethodGet && method != http.MethodHead {
+			<-googleWriteLimiter.C
+		}
 
 		if len(body) > 0 {
 			bodyReader = bytes.NewReader(body)
@@ -489,7 +654,39 @@ func makeGoogleAPIRequest(app core.App, authRecord *core.Record, method string, 
 			retryReq.Header.Set("Content-Type", "application/json")
 		}
 
-		resp, err = client.Do(retryReq)
+		resp, err = googleSharedHTTPClient.Do(retryReq)
+		if err != nil {
+			return nil, token, err
+		}
+	}
+
+	// If rate limited (429 or 403 quota/rateLimitExceeded), back off and retry up to 3 times
+	for attempt := 1; attempt <= 3 && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden); attempt++ {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		backoff := time.Duration(attempt) * 1000 * time.Millisecond
+		log.Printf("[RateLimit] Google API rate limited (%d). Backing off %v (attempt %d/3)...", resp.StatusCode, backoff, attempt)
+		time.Sleep(backoff)
+
+		if method != http.MethodGet && method != http.MethodHead {
+			<-googleWriteLimiter.C
+		}
+
+		if len(body) > 0 {
+			bodyReader = bytes.NewReader(body)
+		}
+		retryReq, err := http.NewRequest(method, endpoint, bodyReader)
+		if err != nil {
+			return nil, token, err
+		}
+		retryReq.Header.Set("Authorization", "Bearer "+token)
+		retryReq.Header.Set("Accept", "application/json")
+		if len(body) > 0 {
+			retryReq.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err = googleSharedHTTPClient.Do(retryReq)
 		if err != nil {
 			return nil, token, err
 		}
@@ -574,19 +771,20 @@ func ensureLassoGoogleCalendar(app core.App, authRecord *core.Record) (string, e
 
 	// 4. Save/Update PB record
 	if existingRecord != nil {
-		if existingRecord.GetString("calendar_id") != foundGoogleCalID {
-			existingRecord.Set("calendar_id", foundGoogleCalID)
-			existingRecord.Set("source", "google")
-			_ = app.Save(existingRecord)
+		cal := proxies.NewCalendar(existingRecord)
+		if cal.CalendarID() != foundGoogleCalID {
+			cal.SetCalendarID(foundGoogleCalID)
+			cal.SetSource(proxies.CalendarSourceGoogle)
+			_ = app.Save(cal)
 		}
 	} else {
-		newCal := core.NewRecord(calendarsCollection)
-		newCal.Set("user", authRecord.Id)
-		newCal.Set("name", "Lasso")
-		newCal.Set("color", "#515151")
-		newCal.Set("source", "google")
-		newCal.Set("visible", true)
-		newCal.Set("calendar_id", foundGoogleCalID)
+		newCal := proxies.NewCalendarRecord(calendarsCollection)
+		newCal.SetUserID(authRecord.Id)
+		newCal.SetName("Lasso")
+		newCal.SetColor("#515151")
+		newCal.SetSource(proxies.CalendarSourceGoogle)
+		newCal.SetVisible(true)
+		newCal.SetCalendarID(foundGoogleCalID)
 		if err := app.Save(newCal); err != nil {
 			log.Printf("Warning: failed to save Lasso calendar record in PB: %v", err)
 		}
@@ -685,86 +883,227 @@ func handlePurgeLassoCalendar(app core.App) func(e *core.RequestEvent) error {
 // tagging each event by course with title prefix [Course], description metadata, and color.
 func syncLassoToGoogle(app core.App) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
-		startTime := time.Now()
 		authRecord, err := getAuth(app, e)
 		if err != nil {
 			return err
 		}
 
-		syncRec, err := getOrCreateSyncStatus(app, authRecord.Id)
+		resp, err := runOutboundGoogleSync(app, authRecord)
 		if err != nil {
-			return e.InternalServerError("Failed to get sync status", err)
-		}
-		syncStatus := proxies.NewSyncStatus(syncRec)
-
-		if !syncStatus.GoogleExportEnabled() {
-			msg := "Google Calendar export is disabled in user settings."
-			_ = updateSyncStatusFinished(
-				app,
-				authRecord.Id,
-				SyncOpGoogleExport,
-				"success",
-				msg,
-				"",
-				time.Since(startTime).Milliseconds(),
-			)
-			return e.JSON(http.StatusOK, GoogleSyncResponse{
-				Success: true,
-				Message: msg,
-			})
+			return e.BadRequestError(err.Error(), err)
 		}
 
-		_ = updateSyncStatusRunning(app, authRecord.Id, SyncOpGoogleExport)
+		return e.JSON(http.StatusOK, resp)
+	}
+}
 
-		lassoCalID, err := ensureLassoGoogleCalendar(app, authRecord)
-		if err != nil {
-			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpGoogleExport, "error", "", err.Error(), time.Since(startTime).Milliseconds())
-			return e.BadRequestError("Failed to setup Lasso Google calendar: "+err.Error(), err)
+// runOutboundGoogleSync pushes user coursework deadlines and events to the "Lasso" Google Calendar.
+func runOutboundGoogleSync(app core.App, authRecord *core.Record) (*GoogleSyncResponse, error) {
+	if authRecord == nil {
+		return nil, fmt.Errorf("authentication required")
+	}
+
+	startTime := time.Now()
+
+	syncStatus, err := getOrCreateSyncStatus(app, authRecord.Id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sync status: %w", err)
+	}
+
+	if !syncStatus.GoogleExportEnabled() {
+		msg := "Google Calendar export is disabled in user settings."
+		_ = updateSyncStatusFinished(
+			app,
+			authRecord.Id,
+			SyncOpGoogleExport,
+			"success",
+			msg,
+			"",
+			time.Since(startTime).Milliseconds(),
+		)
+		return &GoogleSyncResponse{
+			Success: true,
+			Message: msg,
+		}, nil
+	}
+
+	_ = updateSyncStatusRunning(app, authRecord.Id, SyncOpGoogleExport)
+
+	// Target calendar resolution: prefer active record in 'calendars', then cached syncStatus, then ensure
+	lassoCalID := ""
+	if calRec, _ := app.FindFirstRecordByFilter(proxies.CollectionCalendars, "user = {:user} && name = 'Lasso' && calendar_id != ''", map[string]any{"user": authRecord.Id}); calRec != nil {
+		cal := proxies.NewCalendar(calRec)
+		lassoCalID = cal.CalendarID()
+	}
+	if lassoCalID == "" {
+		lassoCalID = syncStatus.GoogleExportCalendarID()
+	}
+	if lassoCalID == "" {
+		var errEnsure error
+		lassoCalID, errEnsure = ensureLassoGoogleCalendar(app, authRecord)
+		if errEnsure != nil {
+			_ = updateSyncStatusFinished(app, authRecord.Id, SyncOpGoogleExport, "error", "", errEnsure.Error(), time.Since(startTime).Milliseconds())
+			return nil, fmt.Errorf("failed to setup Lasso Google calendar: %w", errEnsure)
+		}
+	}
+	if syncStatus.GoogleExportCalendarID() != lassoCalID {
+		syncStatus.SetGoogleExportCalendarID(lassoCalID)
+		_ = app.Save(syncStatus)
+	}
+
+	// 1. Fetch user coursework calendars
+	calRecords, err := app.FindRecordsByFilter(
+		proxies.CollectionCalendars,
+		"user = {:user}",
+		"name",
+		200,
+		0,
+		map[string]any{"user": authRecord.Id},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch calendars: %w", err)
+	}
+
+		var courseCalendars []*proxies.Calendar
+		calByID := make(map[string]*proxies.Calendar)
+		for _, c := range calRecords {
+			cal := proxies.NewCalendar(c)
+			courseCalendars = append(courseCalendars, cal)
+			calByID[cal.Id] = cal
+			if cid := cal.CourseID(); cid != "" {
+				calByID[cid] = cal
+			}
 		}
 
-		// 1. Fetch user course calendars for course tagging and color mapping
-		courseCalendars, err := app.FindRecordsByFilter(
-			"calendars",
+		// 2. Fetch user labels
+		labelRecords, _ := app.FindRecordsByFilter(
+			proxies.CollectionLabels,
 			"user = {:user}",
 			"name",
 			200,
 			0,
 			map[string]any{"user": authRecord.Id},
 		)
-		if err != nil {
-			return e.InternalServerError("Failed to fetch calendars", err)
+		var userLabels []*proxies.Label
+		for _, l := range labelRecords {
+			userLabels = append(userLabels, proxies.NewLabel(l))
 		}
 
-		calByID := make(map[string]*core.Record)
-		for _, c := range courseCalendars {
-			calByID[c.Id] = c
-			if cid := c.GetString("course_id"); cid != "" {
-				calByID[cid] = c
+		// Phase 1: Flush pending deletions concurrently with Phase 2 (Decoupled Tag Check)
+		var deletedCount int
+		var tagSyncErr error
+		var wg sync.WaitGroup
+
+		// Worker 1: Flush pending_delete tombstones
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pendingRecords, errPending := app.FindRecordsByFilter(
+				proxies.CollectionSyncRegistry,
+				"user = {:user} && google_calendar_id = {:cal} && status = 'pending_delete'",
+				"",
+				500,
+				0,
+				map[string]any{"user": authRecord.Id, "cal": lassoCalID},
+			)
+			if errPending != nil || len(pendingRecords) == 0 {
+				return
 			}
+
+			var delRecordsToSave []*core.Record
+			for _, rawReg := range pendingRecords {
+				reg := proxies.NewSyncRegistry(rawReg)
+				gEventID := reg.GoogleEventID()
+				if gEventID == "" {
+					reg.SetStatus(proxies.SyncRegistryStatusDeleted)
+					delRecordsToSave = append(delRecordsToSave, reg.Record)
+					continue
+				}
+
+				delURL := fmt.Sprintf(
+					"https://www.googleapis.com/calendar/v3/calendars/%s/events/%s",
+					url.PathEscape(lassoCalID),
+					url.PathEscape(gEventID),
+				)
+				delResp, _, errDel := makeGoogleAPIRequest(app, authRecord, "DELETE", delURL, nil)
+				if errDel == nil {
+					if delResp.StatusCode == http.StatusOK || delResp.StatusCode == http.StatusNoContent || delResp.StatusCode == http.StatusNotFound || delResp.StatusCode == http.StatusGone {
+						reg.SetStatus(proxies.SyncRegistryStatusDeleted)
+						delRecordsToSave = append(delRecordsToSave, reg.Record)
+						deletedCount++
+					}
+					io.Copy(io.Discard, delResp.Body)
+					delResp.Body.Close()
+				}
+			}
+			if len(delRecordsToSave) > 0 {
+				_ = app.RunInTransaction(func(txApp core.App) error {
+					for _, rec := range delRecordsToSave {
+						_ = txApp.Save(rec)
+					}
+					return nil
+				})
+			}
+		}()
+
+		// Worker 2: Decoupled Tag Check (0 Google API calls if clean, 1 PATCH if dirty)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tagSyncErr = reconcileCalendarTagsIfDirty(app, authRecord, lassoCalID, syncStatus, courseCalendars, userLabels)
+		}()
+
+		wg.Wait()
+
+		if tagSyncErr != nil {
+			log.Printf("Warning: reconcileCalendarTagsIfDirty returned: %v", tagSyncErr)
 		}
 
-		// 2. Fetch all user tasks that have due dates
-		tasks, err := app.FindRecordsByFilter(
-			"tasks",
-			"user = {:user} && due_date != ''",
+		// Phase 3: In-Memory Delta Filter & Targeted Dispatch
+		activeRegRecords, err := app.FindRecordsByFilter(
+			proxies.CollectionSyncRegistry,
+			"user = {:user} && google_calendar_id = {:cal} && status = 'active'",
+			"",
+			0,
+			0,
+			map[string]any{"user": authRecord.Id, "cal": lassoCalID},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query sync registry: %w", err)
+		}
+
+		regMap := make(map[string]*proxies.SyncRegistry) // key = entityType + ":" + entityID
+		for _, rawReg := range activeRegRecords {
+			reg := proxies.NewSyncRegistry(rawReg)
+			regMap[string(reg.EntityType())+":"+reg.EntityID()] = reg
+		}
+
+		// Fetch tasks
+		taskRecords, err := app.FindRecordsByFilter(
+			proxies.CollectionTasks,
+			"user = {:user}",
 			"due_date",
 			500,
 			0,
 			map[string]any{"user": authRecord.Id},
 		)
 		if err != nil {
-			return e.InternalServerError("Failed to fetch tasks", err)
+			return nil, fmt.Errorf("failed to fetch tasks: %w", err)
 		}
 
-		validTaskIDs := make(map[string]bool)
-		for _, task := range tasks {
-			validTaskIDs[task.Id] = true
+		taskByID := make(map[string]*proxies.Task)
+		var validTasks []*proxies.Task
+		for _, rawTask := range taskRecords {
+			t := proxies.NewTask(rawTask)
+			taskByID[t.Id] = t
+			if t.DueDate() != "" || t.FakeDueDate() != "" {
+				validTasks = append(validTasks, t)
+			}
 		}
 
-		// 3. Fetch user coursework events / task work blocks from PocketBase events collection.
-		// STRICT FILTER: NEVER sync events that originated from Google Calendar or belong to Google calendars!
+		// Fetch coursework events / work blocks (excluding Google-origin events)
 		allEvents, _ := app.FindRecordsByFilter(
-			"events",
+			proxies.CollectionEvents,
 			"google_event_id = '' && deadline != true",
 			"start",
 			500,
@@ -772,137 +1111,73 @@ func syncLassoToGoogle(app core.App) func(e *core.RequestEvent) error {
 			nil,
 		)
 
-		var validEvents []*core.Record
-		validEventIDs := make(map[string]bool)
-
-		for _, evt := range allEvents {
-			if evt.GetString("google_event_id") != "" {
+		var validEvents []*proxies.Event
+		for _, rawEvt := range allEvents {
+			evt := proxies.NewEvent(rawEvt)
+			if evt.GoogleEventID() != "" {
 				continue
 			}
 
-			calID := evt.GetString("calendar")
-			var courseCal *core.Record = nil
+			calID := evt.CalendarID()
+			var courseCal *proxies.Calendar
 			if calID != "" {
 				courseCal = calByID[calID]
+			}
+			if (courseCal == nil || (courseCal.Source() != proxies.CalendarSourceCanvas && courseCal.LabelID() == "")) && evt.TaskID() != "" {
+				if linkedTask := taskByID[evt.TaskID()]; linkedTask != nil {
+					if taskCalID := linkedTask.CalendarID(); taskCalID != "" {
+						if tCal := calByID[taskCalID]; tCal != nil {
+							courseCal = tCal
+						}
+					}
+				}
 			}
 			if courseCal == nil {
 				continue
 			}
-
-			// Exclude any events belonging to Google calendars
-			if courseCal.GetString("source") == "google" || courseCal.GetString("calendar_id") != "" {
+			if courseCal.Source() == proxies.CalendarSourceGoogle || courseCal.CalendarID() != "" {
 				continue
 			}
-
-			// Must belong to this user
-			if courseCal.GetString("user") != authRecord.Id {
+			if courseCal.UserID() != authRecord.Id {
 				continue
 			}
-
-			// Must be a Canvas course event or a task work block
-			if courseCal.GetString("source") != "canvas" && evt.GetString("task") == "" {
+			if courseCal.Source() != proxies.CalendarSourceCanvas && evt.TaskID() == "" {
 				continue
 			}
-
 			validEvents = append(validEvents, evt)
-			validEventIDs[evt.Id] = true
-		}
-
-		// 4. Fetch existing managed events on the Google "Lasso" calendar
-		// to make sync idempotent, update existing, and purge non-coursework / stray events.
-		eventsURL := fmt.Sprintf(
-			"https://www.googleapis.com/calendar/v3/calendars/%s/events?privateExtendedProperty=lasso_managed=true&maxResults=2500",
-			url.PathEscape(lassoCalID),
-		)
-		existingResp, _, err := makeGoogleAPIRequest(app, authRecord, "GET", eventsURL, nil)
-		if err != nil {
-			return e.BadRequestError("Failed to query Lasso calendar events: "+err.Error(), err)
-		}
-		defer existingResp.Body.Close()
-
-		existingEventsByTaskID := make(map[string]string)  // task_id -> google_event_id
-		existingEventsByEventID := make(map[string]string) // event_id -> google_event_id
-		var itemsToDelete []string
-
-		if existingResp.StatusCode == http.StatusOK {
-			var listResp GoogleEventListResponse
-			if err := json.NewDecoder(existingResp.Body).Decode(&listResp); err == nil {
-				for _, itm := range listResp.Items {
-					if itm.ExtendedProperties != nil && itm.ExtendedProperties.Private != nil {
-						tid := itm.ExtendedProperties.Private["lasso_task_id"]
-						eid := itm.ExtendedProperties.Private["lasso_event_id"]
-
-						if tid != "" {
-							if validTaskIDs[tid] {
-								existingEventsByTaskID[tid] = itm.ID
-							} else {
-								itemsToDelete = append(itemsToDelete, itm.ID)
-							}
-						} else if eid != "" {
-							if validEventIDs[eid] {
-								existingEventsByEventID[eid] = itm.ID
-							} else {
-								itemsToDelete = append(itemsToDelete, itm.ID)
-							}
-						} else if itm.ExtendedProperties.Private["lasso_managed"] == "true" {
-							itemsToDelete = append(itemsToDelete, itm.ID)
-						}
-					}
-				}
-			}
-		}
-
-		// Delete any stray or invalid events from the Google "Lasso" calendar
-		deletedCount := 0
-		if len(itemsToDelete) > 0 {
-			var wg sync.WaitGroup
-			sem := make(chan struct{}, 5)
-			var mu sync.Mutex
-
-			for _, itmID := range itemsToDelete {
-				wg.Add(1)
-				go func(id string) {
-					defer wg.Done()
-					sem <- struct{}{}
-					defer func() { <-sem }()
-
-					delURL := fmt.Sprintf(
-						"https://www.googleapis.com/calendar/v3/calendars/%s/events/%s",
-						url.PathEscape(lassoCalID),
-						url.PathEscape(id),
-					)
-					delResp, _, errDel := makeGoogleAPIRequest(app, authRecord, "DELETE", delURL, nil)
-					if errDel == nil {
-						delResp.Body.Close()
-						if delResp.StatusCode == http.StatusOK || delResp.StatusCode == http.StatusNoContent || delResp.StatusCode == http.StatusNotFound {
-							mu.Lock()
-							deletedCount++
-							mu.Unlock()
-						}
-					}
-				}(itmID)
-			}
-			wg.Wait()
-			log.Printf("Cleaned up %d non-coursework/stray events from Google 'Lasso' calendar", deletedCount)
 		}
 
 		createdCount := 0
 		updatedCount := 0
+		cleanTasksCount := 0
+		dirtyTasksCount := 0
 		coursesTaggedSet := make(map[string]bool)
 
-		// 4. Iterate over tasks and upsert them as course-tagged events
-		for _, task := range tasks {
-			rawDue := task.GetString("due_date")
+		type dirtyTaskItem struct {
+			task           *proxies.Task
+			existingReg    *proxies.SyncRegistry
+			courseCal      *proxies.Calendar
+			courseName     string
+			courseNickname string
+			canvasCourseID string
+			courseTag      string
+			rawDue         string
+		}
+
+		var dirtyTasks []dirtyTaskItem
+
+		// Delta filter for tasks
+		for _, task := range validTasks {
+			rawDue := task.DueDate()
 			if strings.TrimSpace(rawDue) == "" {
-				rawDue = task.GetString("fake_due_date")
+				rawDue = task.FakeDueDate()
 			}
 			if strings.TrimSpace(rawDue) == "" {
 				continue
 			}
 
-			// Resolve course calendar
-			calID := task.GetString("calendar")
-			var courseCal *core.Record = nil
+			calID := task.CalendarID()
+			var courseCal *proxies.Calendar
 			if calID != "" {
 				courseCal = calByID[calID]
 			}
@@ -910,242 +1185,505 @@ func syncLassoToGoogle(app core.App) func(e *core.RequestEvent) error {
 			courseName := "Coursework"
 			courseNickname := ""
 			canvasCourseID := ""
-
 			if courseCal != nil {
-				courseName = courseCal.GetString("name")
-				courseNickname = courseCal.GetString("nickname")
-				canvasCourseID = courseCal.GetString("course_id")
+				courseName = courseCal.Name()
+				courseNickname = courseCal.Nickname()
+				canvasCourseID = courseCal.CourseID()
 			}
 
-			// Tag course
 			courseTag := extractCourseTag(courseName, courseNickname)
 			coursesTaggedSet[courseTag] = true
 
-			taskTitle := task.GetString("name")
-			// Add course prefix to event title: [CS 1122] Homework 1
-			taggedSummary := fmt.Sprintf("[%s] %s", courseTag, taskTitle)
-			if task.GetString("status") == "done" {
-				taggedSummary = fmt.Sprintf("[%s] ✓ %s", courseTag, taskTitle)
-			}
+			// Delta evaluation
+			regKey := string(proxies.SyncRegistryEntityTypeTask) + ":" + task.Id
+			existingReg := regMap[regKey]
 
-			// Determine start and end using robust date parser
-			parsedTime, isDateOnly, err := parseDateString(rawDue)
-			if err != nil {
-				log.Printf("Skipping task %s (%s) due to unparseable date '%s': %v", task.Id, taskTitle, rawDue, err)
-				continue
-			}
-
-			var startObj, endObj GoogleDateOrDateTime
-			if isDateOnly {
-				dateStr := parsedTime.Format("2006-01-02")
-				startObj = GoogleDateOrDateTime{Date: dateStr}
-				endObj = GoogleDateOrDateTime{Date: parsedTime.AddDate(0, 0, 1).Format("2006-01-02")}
+			isDirty := false
+			if existingReg == nil {
+				isDirty = true
 			} else {
-				endObj = GoogleDateOrDateTime{DateTime: parsedTime.Format(time.RFC3339)}
-				startObj = GoogleDateOrDateTime{DateTime: parsedTime.Add(-30 * time.Minute).Format(time.RFC3339)}
-			}
-
-			// Rich description
-			statusText := "To Do"
-			if task.GetString("status") == "done" {
-				statusText = "Completed"
-			}
-			priorityText := strings.ToUpper(task.GetString("priority"))
-			if priorityText == "" {
-				priorityText = "NORMAL"
-			}
-
-			description := fmt.Sprintf(
-				"Course: %s\nStatus: %s\nPriority: %s\nDue: %s\n\nSynced by Lasso",
-				courseName,
-				statusText,
-				priorityText,
-				rawDue,
-			)
-
-			payload := GoogleEventPayload{
-				Summary:     taggedSummary,
-				Description: description,
-				Start:       startObj,
-				End:         endObj,
-				ExtendedProperties: &GoogleEventExtendedProperties{
-					Private: map[string]string{
-						"lasso_managed":     "true",
-						"lasso_task_id":     task.Id,
-						"lasso_course_id":   canvasCourseID,
-						"lasso_course_name": courseName,
-						"lasso_tag":         courseTag,
-					},
-				},
-			}
-
-			payloadBytes, _ := json.Marshal(payload)
-
-			if existingGEventID, exists := existingEventsByTaskID[task.Id]; exists {
-				// Update existing event (PATCH)
-				patchURL := fmt.Sprintf(
-					"https://www.googleapis.com/calendar/v3/calendars/%s/events/%s",
-					url.PathEscape(lassoCalID),
-					url.PathEscape(existingGEventID),
-				)
-				resp, _, err := makeGoogleAPIRequest(app, authRecord, "PATCH", patchURL, payloadBytes)
-				if err != nil {
-					log.Printf("Failed to PATCH event for task %s: %v", task.Id, err)
+				syncedAtTime := existingReg.GetDateTime("synced_at").Time()
+				if syncedAtTime.IsZero() {
+					isDirty = true
 				} else {
-					if resp.StatusCode == http.StatusOK {
-						updatedCount++
-					} else {
-						b, _ := io.ReadAll(resp.Body)
-						log.Printf("Google PATCH returned status %d for task %s: %s", resp.StatusCode, task.Id, string(b))
+					taskUpdated := task.GetDateTime("updated").Time()
+					if taskUpdated.After(syncedAtTime) {
+						isDirty = true
 					}
-					resp.Body.Close()
 				}
-			} else {
-				// Insert new event (POST)
-				insertURL := fmt.Sprintf(
-					"https://www.googleapis.com/calendar/v3/calendars/%s/events",
-					url.PathEscape(lassoCalID),
-				)
-				resp, _, err := makeGoogleAPIRequest(app, authRecord, "POST", insertURL, payloadBytes)
-				if err != nil {
-					log.Printf("Failed to POST event for task %s: %v", task.Id, err)
-				} else {
-					if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-						createdCount++
-					} else {
-						b, _ := io.ReadAll(resp.Body)
-						log.Printf("Google POST returned status %d for task %s: %s", resp.StatusCode, task.Id, string(b))
+			}
+
+			if !isDirty {
+				cleanTasksCount++
+				continue // 0 Google API calls!
+			}
+			dirtyTasksCount++
+			dirtyTasks = append(dirtyTasks, dirtyTaskItem{
+				task:           task,
+				existingReg:    existingReg,
+				courseCal:      courseCal,
+				courseName:     courseName,
+				courseNickname: courseNickname,
+				canvasCourseID: canvasCourseID,
+				courseTag:      courseTag,
+				rawDue:         rawDue,
+			})
+		}
+
+		// Parallel dispatch for dirty tasks
+		if len(dirtyTasks) > 0 {
+			regCol, _ := app.FindCollectionByNameOrId(proxies.CollectionSyncRegistry)
+			const maxConcurrency = 4
+			sem := make(chan struct{}, maxConcurrency)
+			var taskWg sync.WaitGroup
+			var mu sync.Mutex
+			var taskRegsToSave []*core.Record
+
+			for _, dt := range dirtyTasks {
+				taskWg.Add(1)
+				sem <- struct{}{}
+				go func(item dirtyTaskItem) {
+					defer func() {
+						<-sem
+						taskWg.Done()
+					}()
+
+					taskTitle := item.task.Name()
+					taggedSummary := fmt.Sprintf("[%s] %s", item.courseTag, taskTitle)
+					if item.task.Status() == proxies.TaskStatusDone {
+						taggedSummary = fmt.Sprintf("[%s] ✓ %s", item.courseTag, taskTitle)
 					}
-					resp.Body.Close()
+
+					parsedTime, isDateOnly, errParse := parseDateString(item.rawDue)
+					if errParse != nil {
+						log.Printf("Skipping task %s due to unparseable date '%s': %v", item.task.Id, item.rawDue, errParse)
+						return
+					}
+
+					var startObj, endObj GoogleDateOrDateTime
+					if isDateOnly {
+						dateStr := parsedTime.Format("2006-01-02")
+						startObj = GoogleDateOrDateTime{Date: dateStr}
+						endObj = GoogleDateOrDateTime{Date: parsedTime.AddDate(0, 0, 1).Format("2006-01-02")}
+					} else {
+						endObj = GoogleDateOrDateTime{DateTime: parsedTime.Format(time.RFC3339)}
+						startObj = GoogleDateOrDateTime{DateTime: parsedTime.Add(-30 * time.Minute).Format(time.RFC3339)}
+					}
+
+					statusText := "To Do"
+					if item.task.Status() == proxies.TaskStatusDone {
+						statusText = "Completed"
+					}
+					priorityText := strings.ToUpper(string(item.task.Priority()))
+					if priorityText == "" {
+						priorityText = "NORMAL"
+					}
+
+					description := fmt.Sprintf(
+						"Course: %s\nStatus: %s\nPriority: %s\nDue: %s\n\nSynced by Lasso",
+						item.courseName,
+						statusText,
+						priorityText,
+						item.rawDue,
+					)
+
+					eventLabelID := ""
+					if item.courseCal != nil {
+						eventLabelID = item.courseCal.GoogleLabelID()
+						if eventLabelID == "" {
+							eventLabelID = getCalendarGoogleLabelID(item.courseCal.Id)
+						}
+					}
+
+					payload := GoogleEventPayload{
+						Summary:      taggedSummary,
+						Description:  description,
+						Start:        startObj,
+						End:          endObj,
+						EventLabelID: eventLabelID,
+						ExtendedProperties: &GoogleEventExtendedProperties{
+							Private: map[string]string{
+								"lasso_managed":     "true",
+								"lasso_task_id":     item.task.Id,
+								"lasso_course_id":   item.canvasCourseID,
+								"lasso_course_name": item.courseName,
+								"lasso_tag":         item.courseTag,
+							},
+						},
+					}
+					payloadBytes, _ := json.Marshal(payload)
+
+					if item.existingReg != nil && item.existingReg.GoogleEventID() != "" {
+						// Update existing event (PATCH)
+						patchURL := fmt.Sprintf(
+							"https://www.googleapis.com/calendar/v3/calendars/%s/events/%s?eventLabelVersion=1",
+							url.PathEscape(lassoCalID),
+							url.PathEscape(item.existingReg.GoogleEventID()),
+						)
+						resp, _, errPatch := makeGoogleAPIRequest(app, authRecord, "PATCH", patchURL, payloadBytes)
+						if errPatch == nil {
+							if resp.StatusCode == http.StatusOK {
+								item.existingReg.SetSyncedAt(time.Now().UTC().Format("2006-01-02 15:04:05.000Z"))
+								mu.Lock()
+								taskRegsToSave = append(taskRegsToSave, item.existingReg.Record)
+								updatedCount++
+								mu.Unlock()
+							} else if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+								// Re-create via POST if Google event was deleted remotely
+								insertURL := fmt.Sprintf(
+									"https://www.googleapis.com/calendar/v3/calendars/%s/events?eventLabelVersion=1",
+									url.PathEscape(lassoCalID),
+								)
+								respPost, _, errPost := makeGoogleAPIRequest(app, authRecord, "POST", insertURL, payloadBytes)
+								if errPost == nil {
+									if respPost.StatusCode == http.StatusOK || respPost.StatusCode == http.StatusCreated {
+										var createdEvt GoogleEventPayload
+										if errDec := json.NewDecoder(respPost.Body).Decode(&createdEvt); errDec == nil {
+											item.existingReg.SetGoogleEventID(createdEvt.ID)
+											item.existingReg.SetSyncedAt(time.Now().UTC().Format("2006-01-02 15:04:05.000Z"))
+											mu.Lock()
+											taskRegsToSave = append(taskRegsToSave, item.existingReg.Record)
+											updatedCount++
+											mu.Unlock()
+										}
+									}
+									io.Copy(io.Discard, respPost.Body)
+									respPost.Body.Close()
+								}
+							}
+							io.Copy(io.Discard, resp.Body)
+							resp.Body.Close()
+						}
+					} else {
+						// Create new event (POST)
+						insertURL := fmt.Sprintf(
+							"https://www.googleapis.com/calendar/v3/calendars/%s/events?eventLabelVersion=1",
+							url.PathEscape(lassoCalID),
+						)
+						respPost, _, errPost := makeGoogleAPIRequest(app, authRecord, "POST", insertURL, payloadBytes)
+						if errPost == nil {
+							if respPost.StatusCode == http.StatusOK || respPost.StatusCode == http.StatusCreated {
+								var createdEvt GoogleEventPayload
+								if errDec := json.NewDecoder(respPost.Body).Decode(&createdEvt); errDec == nil {
+									if regCol != nil {
+										newReg := proxies.NewSyncRegistryRecord(regCol)
+										newReg.SetUserID(authRecord.Id)
+										newReg.SetEntityID(item.task.Id)
+										newReg.SetEntityType(proxies.SyncRegistryEntityTypeTask)
+										newReg.SetGoogleCalendarID(lassoCalID)
+										newReg.SetGoogleEventID(createdEvt.ID)
+										newReg.SetSyncedAt(time.Now().UTC().Format("2006-01-02 15:04:05.000Z"))
+										newReg.SetStatus(proxies.SyncRegistryStatusActive)
+										mu.Lock()
+										taskRegsToSave = append(taskRegsToSave, newReg.Record)
+										createdCount++
+										mu.Unlock()
+									}
+								}
+							}
+							io.Copy(io.Discard, respPost.Body)
+							respPost.Body.Close()
+						}
+					}
+				}(dt)
+			}
+			taskWg.Wait()
+
+			if len(taskRegsToSave) > 0 {
+				errBatch := app.RunInTransaction(func(txApp core.App) error {
+					for _, rec := range taskRegsToSave {
+						if err := txApp.Save(rec); err != nil {
+							log.Printf("Error batch saving task sync registry record: %v", err)
+						}
+					}
+					return nil
+				})
+				if errBatch != nil {
+					log.Printf("Error committing task sync registry transaction: %v", errBatch)
 				}
 			}
 		}
 
-		// 5. Iterate over valid coursework events / work sessions and upsert them
+		log.Printf("[GoogleExport] Tasks evaluated: %d total (%d clean/skipped, %d dirty/dispatched)", len(validTasks), cleanTasksCount, dirtyTasksCount)
+
+		cleanEvtsCount := 0
+		dirtyEvtsCount := 0
+
+		type dirtyEventItem struct {
+			evt            *proxies.Event
+			existingReg    *proxies.SyncRegistry
+			courseCal      *proxies.Calendar
+			courseName     string
+			courseNickname string
+			canvasCourseID string
+			courseTag      string
+			rawStart       string
+		}
+
+		var dirtyEvents []dirtyEventItem
+
+		// Delta filter for events (work sessions / Canvas coursework events)
 		for _, evt := range validEvents {
-			rawStart := evt.GetString("start")
+			rawStart := evt.Start()
 			if strings.TrimSpace(rawStart) == "" {
 				continue
 			}
 
-			calID := evt.GetString("calendar")
-			var courseCal *core.Record = nil
+			calID := evt.CalendarID()
+			var courseCal *proxies.Calendar
 			if calID != "" {
 				courseCal = calByID[calID]
 			}
-			if courseCal == nil && calID != "" {
-				continue
+			if (courseCal == nil || courseCal.LabelID() == "") && evt.TaskID() != "" {
+				if linkedTask := taskByID[evt.TaskID()]; linkedTask != nil {
+					if taskCalID := linkedTask.CalendarID(); taskCalID != "" {
+						if tCal := calByID[taskCalID]; tCal != nil {
+							courseCal = tCal
+						}
+					}
+				}
 			}
 
 			courseName := "Coursework"
 			courseNickname := ""
 			canvasCourseID := ""
 			if courseCal != nil {
-				courseName = courseCal.GetString("name")
-				courseNickname = courseCal.GetString("nickname")
-				canvasCourseID = courseCal.GetString("course_id")
+				courseName = courseCal.Name()
+				courseNickname = courseCal.Nickname()
+				canvasCourseID = courseCal.CourseID()
 			}
 
 			courseTag := extractCourseTag(courseName, courseNickname)
 			coursesTaggedSet[courseTag] = true
 
-			evtTitle := evt.GetString("title")
-			if evtTitle == "" {
-				evtTitle = "Event"
-			}
-			taggedSummary := fmt.Sprintf("[%s] %s", courseTag, evtTitle)
+			// Delta evaluation
+			regKey := string(proxies.SyncRegistryEntityTypeEvent) + ":" + evt.Id
+			existingReg := regMap[regKey]
 
-			startParsed, isStartOnlyDate, errStart := parseDateString(rawStart)
-			if errStart != nil {
-				log.Printf("Skipping event %s due to unparseable start date '%s': %v", evt.Id, rawStart, errStart)
-				continue
-			}
-
-			var startObj, endObj GoogleDateOrDateTime
-			if evt.GetBool("allday") || isStartOnlyDate {
-				dateStr := startParsed.Format("2006-01-02")
-				startObj = GoogleDateOrDateTime{Date: dateStr}
-				rawEnd := evt.GetString("end")
-				if rawEnd != "" {
-					if endParsed, _, errEnd := parseDateString(rawEnd); errEnd == nil {
-						endObj = GoogleDateOrDateTime{Date: endParsed.AddDate(0, 0, 1).Format("2006-01-02")}
-					} else {
-						endObj = GoogleDateOrDateTime{Date: startParsed.AddDate(0, 0, 1).Format("2006-01-02")}
-					}
-				} else {
-					endObj = GoogleDateOrDateTime{Date: startParsed.AddDate(0, 0, 1).Format("2006-01-02")}
-				}
+			isDirty := false
+			if existingReg == nil {
+				isDirty = true
 			} else {
-				startObj = GoogleDateOrDateTime{DateTime: startParsed.Format(time.RFC3339)}
-				rawEnd := evt.GetString("end")
-				if rawEnd != "" {
-					if endParsed, _, errEnd := parseDateString(rawEnd); errEnd == nil {
-						endObj = GoogleDateOrDateTime{DateTime: endParsed.Format(time.RFC3339)}
-					} else {
-						endObj = GoogleDateOrDateTime{DateTime: startParsed.Add(60 * time.Minute).Format(time.RFC3339)}
-					}
+				syncedAtTime := existingReg.GetDateTime("synced_at").Time()
+				if syncedAtTime.IsZero() {
+					isDirty = true
 				} else {
-					endObj = GoogleDateOrDateTime{DateTime: startParsed.Add(60 * time.Minute).Format(time.RFC3339)}
+					evtUpdated := evt.GetDateTime("updated").Time()
+					if evtUpdated.After(syncedAtTime) {
+						isDirty = true
+					}
 				}
 			}
 
-			payload := GoogleEventPayload{
-				Summary:     taggedSummary,
-				Description: fmt.Sprintf("Course: %s\n\nSynced by Lasso", courseName),
-				Start:       startObj,
-				End:         endObj,
-				ExtendedProperties: &GoogleEventExtendedProperties{
-					Private: map[string]string{
-						"lasso_managed":     "true",
-						"lasso_event_id":    evt.Id,
-						"lasso_course_id":   canvasCourseID,
-						"lasso_course_name": courseName,
-						"lasso_tag":         courseTag,
-					},
-				},
+			if !isDirty {
+				cleanEvtsCount++
+				continue // 0 Google API calls!
 			}
+			dirtyEvtsCount++
+			dirtyEvents = append(dirtyEvents, dirtyEventItem{
+				evt:            evt,
+				existingReg:    existingReg,
+				courseCal:      courseCal,
+				courseName:     courseName,
+				courseNickname: courseNickname,
+				canvasCourseID: canvasCourseID,
+				courseTag:      courseTag,
+				rawStart:       rawStart,
+			})
+		}
 
-			payloadBytes, _ := json.Marshal(payload)
+		log.Printf("[GoogleExport] Events evaluated: %d total (%d clean/skipped, %d dirty/dispatched)", len(validEvents), cleanEvtsCount, dirtyEvtsCount)
 
-			if existingGEventID, exists := existingEventsByEventID[evt.Id]; exists {
-				patchURL := fmt.Sprintf(
-					"https://www.googleapis.com/calendar/v3/calendars/%s/events/%s",
-					url.PathEscape(lassoCalID),
-					url.PathEscape(existingGEventID),
-				)
-				resp, _, err := makeGoogleAPIRequest(app, authRecord, "PATCH", patchURL, payloadBytes)
-				if err == nil {
-					resp.Body.Close()
-					if resp.StatusCode == http.StatusOK {
-						updatedCount++
+		// Parallel dispatch for dirty events
+		if len(dirtyEvents) > 0 {
+			regCol, _ := app.FindCollectionByNameOrId(proxies.CollectionSyncRegistry)
+			const maxConcurrency = 4
+			sem := make(chan struct{}, maxConcurrency)
+			var evtWg sync.WaitGroup
+			var mu sync.Mutex
+			var evtRegsToSave []*core.Record
+
+			for _, de := range dirtyEvents {
+				evtWg.Add(1)
+				sem <- struct{}{}
+				go func(item dirtyEventItem) {
+					defer func() {
+						<-sem
+						evtWg.Done()
+					}()
+
+					evtTitle := item.evt.Title()
+					if evtTitle == "" {
+						evtTitle = "Event"
 					}
-				}
-			} else {
-				insertURL := fmt.Sprintf(
-					"https://www.googleapis.com/calendar/v3/calendars/%s/events",
-					url.PathEscape(lassoCalID),
-				)
-				resp, _, err := makeGoogleAPIRequest(app, authRecord, "POST", insertURL, payloadBytes)
-				if err == nil {
-					resp.Body.Close()
-					if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-						createdCount++
+					taggedSummary := fmt.Sprintf("[%s] %s", item.courseTag, evtTitle)
+
+					startParsed, isStartOnlyDate, errStart := parseDateString(item.rawStart)
+					if errStart != nil {
+						log.Printf("Skipping event %s due to unparseable start date '%s': %v", item.evt.Id, item.rawStart, errStart)
+						return
 					}
+
+					var startObj, endObj GoogleDateOrDateTime
+					if item.evt.AllDay() || isStartOnlyDate {
+						dateStr := startParsed.Format("2006-01-02")
+						startObj = GoogleDateOrDateTime{Date: dateStr}
+						rawEnd := item.evt.End()
+						if rawEnd != "" {
+							if endParsed, _, errEnd := parseDateString(rawEnd); errEnd == nil {
+								endObj = GoogleDateOrDateTime{Date: endParsed.AddDate(0, 0, 1).Format("2006-01-02")}
+							} else {
+								endObj = GoogleDateOrDateTime{Date: startParsed.AddDate(0, 0, 1).Format("2006-01-02")}
+							}
+						} else {
+							endObj = GoogleDateOrDateTime{Date: startParsed.AddDate(0, 0, 1).Format("2006-01-02")}
+						}
+					} else {
+						startObj = GoogleDateOrDateTime{DateTime: startParsed.Format(time.RFC3339)}
+						rawEnd := item.evt.End()
+						if rawEnd != "" {
+							if endParsed, _, errEnd := parseDateString(rawEnd); errEnd == nil {
+								endObj = GoogleDateOrDateTime{DateTime: endParsed.Format(time.RFC3339)}
+							} else {
+								endObj = GoogleDateOrDateTime{DateTime: startParsed.Add(60 * time.Minute).Format(time.RFC3339)}
+							}
+						} else {
+							endObj = GoogleDateOrDateTime{DateTime: startParsed.Add(60 * time.Minute).Format(time.RFC3339)}
+						}
+					}
+
+					eventLabelID := ""
+					if item.courseCal != nil {
+						eventLabelID = item.courseCal.GoogleLabelID()
+						if eventLabelID == "" {
+							eventLabelID = getCalendarGoogleLabelID(item.courseCal.Id)
+						}
+					}
+
+					payload := GoogleEventPayload{
+						Summary:      taggedSummary,
+						Description:  fmt.Sprintf("Course: %s\n\nSynced by Lasso", item.courseName),
+						Start:        startObj,
+						End:          endObj,
+						EventLabelID: eventLabelID,
+						ExtendedProperties: &GoogleEventExtendedProperties{
+							Private: map[string]string{
+								"lasso_managed":     "true",
+								"lasso_event_id":    item.evt.Id,
+								"lasso_course_id":   item.canvasCourseID,
+								"lasso_course_name": item.courseName,
+								"lasso_tag":         item.courseTag,
+							},
+						},
+					}
+					payloadBytes, _ := json.Marshal(payload)
+
+					if item.existingReg != nil && item.existingReg.GoogleEventID() != "" {
+						patchURL := fmt.Sprintf(
+							"https://www.googleapis.com/calendar/v3/calendars/%s/events/%s?eventLabelVersion=1",
+							url.PathEscape(lassoCalID),
+							url.PathEscape(item.existingReg.GoogleEventID()),
+						)
+						resp, _, errPatch := makeGoogleAPIRequest(app, authRecord, "PATCH", patchURL, payloadBytes)
+						if errPatch == nil {
+							if resp.StatusCode == http.StatusOK {
+								item.existingReg.SetSyncedAt(time.Now().UTC().Format("2006-01-02 15:04:05.000Z"))
+								mu.Lock()
+								evtRegsToSave = append(evtRegsToSave, item.existingReg.Record)
+								updatedCount++
+								mu.Unlock()
+							} else if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+								// Re-create via POST if Google event was deleted remotely
+								insertURL := fmt.Sprintf(
+									"https://www.googleapis.com/calendar/v3/calendars/%s/events?eventLabelVersion=1",
+									url.PathEscape(lassoCalID),
+								)
+								respPost, _, errPost := makeGoogleAPIRequest(app, authRecord, "POST", insertURL, payloadBytes)
+								if errPost == nil {
+									if respPost.StatusCode == http.StatusOK || respPost.StatusCode == http.StatusCreated {
+										var createdEvt GoogleEventPayload
+										if errDec := json.NewDecoder(respPost.Body).Decode(&createdEvt); errDec == nil {
+											item.existingReg.SetGoogleEventID(createdEvt.ID)
+											item.existingReg.SetSyncedAt(time.Now().UTC().Format("2006-01-02 15:04:05.000Z"))
+											mu.Lock()
+											evtRegsToSave = append(evtRegsToSave, item.existingReg.Record)
+											updatedCount++
+											mu.Unlock()
+										}
+									}
+									io.Copy(io.Discard, respPost.Body)
+									respPost.Body.Close()
+								}
+							}
+							io.Copy(io.Discard, resp.Body)
+							resp.Body.Close()
+						}
+					} else {
+						insertURL := fmt.Sprintf(
+							"https://www.googleapis.com/calendar/v3/calendars/%s/events?eventLabelVersion=1",
+							url.PathEscape(lassoCalID),
+						)
+						respPost, _, errPost := makeGoogleAPIRequest(app, authRecord, "POST", insertURL, payloadBytes)
+						if errPost == nil {
+							if respPost.StatusCode == http.StatusOK || respPost.StatusCode == http.StatusCreated {
+								var createdEvt GoogleEventPayload
+								if errDec := json.NewDecoder(respPost.Body).Decode(&createdEvt); errDec == nil {
+									if regCol != nil {
+										newReg := proxies.NewSyncRegistryRecord(regCol)
+										newReg.SetUserID(authRecord.Id)
+										newReg.SetEntityID(item.evt.Id)
+										newReg.SetEntityType(proxies.SyncRegistryEntityTypeEvent)
+										newReg.SetGoogleCalendarID(lassoCalID)
+										newReg.SetGoogleEventID(createdEvt.ID)
+										newReg.SetSyncedAt(time.Now().UTC().Format("2006-01-02 15:04:05.000Z"))
+										newReg.SetStatus(proxies.SyncRegistryStatusActive)
+										mu.Lock()
+										evtRegsToSave = append(evtRegsToSave, newReg.Record)
+										createdCount++
+										mu.Unlock()
+									}
+								}
+							}
+							io.Copy(io.Discard, respPost.Body)
+							respPost.Body.Close()
+						}
+					}
+				}(de)
+			}
+			evtWg.Wait()
+
+			if len(evtRegsToSave) > 0 {
+				errBatch := app.RunInTransaction(func(txApp core.App) error {
+					for _, rec := range evtRegsToSave {
+						if err := txApp.Save(rec); err != nil {
+							log.Printf("Error batch saving event sync registry record: %v", err)
+						}
+					}
+					return nil
+				})
+				if errBatch != nil {
+					log.Printf("Error committing event sync registry transaction: %v", errBatch)
 				}
 			}
 		}
 
-		totalSynced := createdCount + updatedCount
+		log.Printf("[GoogleExport] Events evaluated: %d total (%d clean/skipped, %d dirty/dispatched)", len(validEvents), cleanEvtsCount, dirtyEvtsCount)
 
-		msg := fmt.Sprintf(
-			"Synced %d coursework events to 'Lasso' calendar (%d created, %d updated across %d courses).",
-			totalSynced, createdCount, updatedCount, len(coursesTaggedSet),
-		)
-		if deletedCount > 0 {
+		totalSynced := createdCount + updatedCount
+		msg := ""
+		if totalSynced == 0 && deletedCount == 0 {
+			msg = fmt.Sprintf("Coursework up to date (0 updates across %d courses).", len(coursesTaggedSet))
+		} else {
 			msg = fmt.Sprintf(
-				"Synced %d coursework events to 'Lasso' calendar (%d created, %d updated, %d non-coursework events removed across %d courses).",
-				totalSynced, createdCount, updatedCount, deletedCount, len(coursesTaggedSet),
+				"Synced %d coursework events to 'Lasso' calendar (%d created, %d updated across %d courses).",
+				totalSynced, createdCount, updatedCount, len(coursesTaggedSet),
 			)
+			if deletedCount > 0 {
+				msg = fmt.Sprintf(
+					"Synced %d coursework events to 'Lasso' calendar (%d created, %d updated, %d events removed across %d courses).",
+					totalSynced, createdCount, updatedCount, deletedCount, len(coursesTaggedSet),
+				)
+			}
 		}
 
 		_ = updateSyncStatusFinished(
@@ -1158,7 +1696,7 @@ func syncLassoToGoogle(app core.App) func(e *core.RequestEvent) error {
 			time.Since(startTime).Milliseconds(),
 		)
 
-		return e.JSON(http.StatusOK, GoogleSyncResponse{
+		return &GoogleSyncResponse{
 			Success:       true,
 			CalendarID:    lassoCalID,
 			SyncedCount:   totalSynced,
@@ -1167,12 +1705,8 @@ func syncLassoToGoogle(app core.App) func(e *core.RequestEvent) error {
 			DeletedCount:  deletedCount,
 			CoursesTagged: len(coursesTaggedSet),
 			Message:       msg,
-		})
+		}, nil
 	}
-}
-
-// =============================================================================
-// Read-Only Fetch for User's Personal Calendars
 // =============================================================================
 
 // fetchReadOnlyGoogleEvents retrieves events from user's personal Google calendars
@@ -1267,7 +1801,7 @@ func fetchReadOnlyGoogleEvents(app core.App) func(e *core.RequestEvent) error {
 				}
 
 				// Skip Lasso-managed events to prevent echoing our own exported items
-				if itm.ExtendedProperties != nil && itm.ExtendedProperties.Private["lasso_managed"] == "true" {
+				if itm.ExtendedProperties != nil && itm.ExtendedProperties.Private != nil && itm.ExtendedProperties.Private["lasso_managed"] == "true" {
 					continue
 				}
 
@@ -1329,6 +1863,8 @@ type InboundSyncResponse struct {
 	Success         bool   `json:"success"`
 	CalendarsSynced int    `json:"calendarsSynced"`
 	EventsSynced    int    `json:"eventsSynced"`
+	EventsCreated   int    `json:"eventsCreated"`
+	EventsUpdated   int    `json:"eventsUpdated"`
 	EventsDeleted   int    `json:"eventsDeleted"`
 	Message         string `json:"message"`
 }
@@ -1401,6 +1937,8 @@ func runInboundGoogleSync(app core.App, authRecord *core.Record) (*InboundSyncRe
 
 	calendarsSynced := 0
 	eventsSynced := 0
+	eventsCreated := 0
+	eventsUpdated := 0
 	eventsDeleted := 0
 
 	nowUTC := time.Now().UTC()
@@ -1441,34 +1979,45 @@ func runInboundGoogleSync(app core.App, authRecord *core.Record) (*InboundSyncRe
 			calColor = "#515151"
 		}
 
-		targetCal := existingCal
-		if targetCal == nil {
-			targetCal = core.NewRecord(calendarsCol)
-			targetCal.Set("user", authRecord.Id)
-			targetCal.Set("source", "google")
-			targetCal.Set("calendar_id", cid)
-			targetCal.Set("name", summary)
-			targetCal.Set("color", calColor)
-			targetCal.Set("visible", true)
+		var targetCal *proxies.Calendar
+		needsCalSave := false
+		if existingCal == nil {
+			targetCal = proxies.NewCalendarRecord(calendarsCol)
+			targetCal.SetUserID(authRecord.Id)
+			targetCal.SetSource(proxies.CalendarSourceGoogle)
+			targetCal.SetCalendarID(cid)
+			targetCal.SetName(summary)
+			targetCal.SetColor(calColor)
+			targetCal.SetVisible(true)
+			needsCalSave = true
 		} else {
+			targetCal = proxies.NewCalendar(existingCal)
 			// Update color to match Google's latest palette color
-			if calColor != "" && targetCal.GetString("color") != calColor {
-				targetCal.Set("color", calColor)
+			if calColor != "" && targetCal.Color() != calColor {
+				targetCal.SetColor(calColor)
+				needsCalSave = true
 			}
 			// Update name if changed and no custom nickname set
-			if targetCal.GetString("nickname") == "" && targetCal.GetString("name") != summary {
-				targetCal.Set("name", summary)
+			if targetCal.Nickname() == "" && targetCal.Name() != summary {
+				targetCal.SetName(summary)
+				needsCalSave = true
 			}
 		}
 
-		if err := app.Save(targetCal); err == nil {
-			gCalToLocalID[cid] = targetCal.Id
-			calendarsSynced++
-			if !isLassoCal {
-				calsToSyncEvents = append(calsToSyncEvents, cid)
+		if needsCalSave {
+			if err := app.Save(targetCal); err == nil {
+				gCalToLocalID[cid] = targetCal.Id
+				calendarsSynced++
+			} else {
+				log.Printf("Warning: failed to save calendar %s: %v", summary, err)
 			}
 		} else {
-			log.Printf("Warning: failed to save calendar %s: %v", summary, err)
+			gCalToLocalID[cid] = targetCal.Id
+			calendarsSynced++
+		}
+
+		if !isLassoCal {
+			calsToSyncEvents = append(calsToSyncEvents, cid)
 		}
 	}
 
@@ -1480,10 +2029,13 @@ func runInboundGoogleSync(app core.App, authRecord *core.Record) (*InboundSyncRe
 		}
 
 		// Find target calendar record in PocketBase to get its default color
-		calRecord, _ := app.FindRecordById("calendars", localCalID)
+		calRecord, _ := app.FindRecordById(proxies.CollectionCalendars, localCalID)
 		defaultCalColor := "#515151"
-		if calRecord != nil && calRecord.GetString("color") != "" {
-			defaultCalColor = calRecord.GetString("color")
+		if calRecord != nil {
+			cal := proxies.NewCalendar(calRecord)
+			if cal.Color() != "" {
+				defaultCalColor = cal.Color()
+			}
 		}
 
 		// Fetch user-defined event labels from the calendar's configuration
@@ -1517,6 +2069,11 @@ func runInboundGoogleSync(app core.App, authRecord *core.Record) (*InboundSyncRe
 
 		for _, itm := range listResp.Items {
 			if itm.Status == "cancelled" {
+				continue
+			}
+
+			// Inbound safety check: do not import events managed/exported by Lasso
+			if itm.ExtendedProperties != nil && itm.ExtendedProperties.Private != nil && itm.ExtendedProperties.Private["lasso_managed"] == "true" {
 				continue
 			}
 
@@ -1570,35 +2127,82 @@ func runInboundGoogleSync(app core.App, authRecord *core.Record) (*InboundSyncRe
 				},
 			)
 
-			targetEvt := existingEvt
-			if targetEvt == nil {
-				targetEvt = core.NewRecord(eventsCol)
-				targetEvt.Set("calendar", localCalID)
-				targetEvt.Set("google_event_id", itm.ID)
-				targetEvt.Set("deadline", false)
-			}
+			formattedStart := startT.UTC().Format("2006-01-02 15:04:05.000Z")
+			formattedEnd := endT.UTC().Format("2006-01-02 15:04:05.000Z")
 
-			targetEvt.Set("title", title)
-			targetEvt.Set("start", startT.UTC().Format("2006-01-02 15:04:05.000Z"))
-			targetEvt.Set("end", endT.UTC().Format("2006-01-02 15:04:05.000Z"))
-			targetEvt.Set("allday", allDay)
-			targetEvt.Set("color", eventColor)
-			targetEvt.Set("event_label_id", eventLabelID)
-			targetEvt.Set("label_name", labelName)
-			if itm.Description != "" {
-				targetEvt.Set("description", itm.Description)
-			}
-
-			if err := app.Save(targetEvt); err == nil {
-				eventsSynced++
+			var targetEvt *proxies.Event
+			needsEvtSave := false
+			if existingEvt == nil {
+				targetEvt = proxies.NewEventRecord(eventsCol)
+				targetEvt.SetCalendarID(localCalID)
+				targetEvt.SetGoogleEventID(itm.ID)
+				targetEvt.SetDeadline(false)
+				targetEvt.SetTitle(title)
+				targetEvt.SetStart(formattedStart)
+				targetEvt.SetEnd(formattedEnd)
+				targetEvt.SetAllDay(allDay)
+				targetEvt.SetColor(eventColor)
+				targetEvt.SetEventLabelID(eventLabelID)
+				targetEvt.SetLabelName(labelName)
+				if itm.Description != "" {
+					targetEvt.SetDescription(itm.Description)
+				}
+				needsEvtSave = true
 			} else {
-				log.Printf("Warning: failed to save event %s: %v", title, err)
+				targetEvt = proxies.NewEvent(existingEvt)
+				if targetEvt.Title() != title {
+					targetEvt.SetTitle(title)
+					needsEvtSave = true
+				}
+				if !datesEqual(targetEvt.Start(), formattedStart) {
+					targetEvt.SetStart(formattedStart)
+					needsEvtSave = true
+				}
+				if !datesEqual(targetEvt.End(), formattedEnd) {
+					targetEvt.SetEnd(formattedEnd)
+					needsEvtSave = true
+				}
+				if targetEvt.AllDay() != allDay {
+					targetEvt.SetAllDay(allDay)
+					needsEvtSave = true
+				}
+				if targetEvt.Color() != eventColor {
+					targetEvt.SetColor(eventColor)
+					needsEvtSave = true
+				}
+				if targetEvt.EventLabelID() != eventLabelID {
+					targetEvt.SetEventLabelID(eventLabelID)
+					needsEvtSave = true
+				}
+				if targetEvt.LabelName() != labelName {
+					targetEvt.SetLabelName(labelName)
+					needsEvtSave = true
+				}
+				if itm.Description != "" && targetEvt.Description() != itm.Description {
+					targetEvt.SetDescription(itm.Description)
+					needsEvtSave = true
+				}
+			}
+
+			if needsEvtSave {
+				if err := app.Save(targetEvt); err == nil {
+					if existingEvt == nil {
+						eventsCreated++
+					} else {
+						eventsUpdated++
+					}
+					eventsSynced++
+				} else {
+					log.Printf("Warning: failed to save event %s: %v", title, err)
+				}
+			} else {
+				eventsSynced++
 			}
 		}
 
 		// Clean up deleted events in PocketBase for this calendar within the sync window
 		localEvents, err := app.FindRecordsByFilter(
-			"events",
+			proxies.CollectionEvents,
 			"calendar = {:calId} && google_event_id != ''",
 			"",
 			500,
@@ -1609,16 +2213,17 @@ func runInboundGoogleSync(app core.App, authRecord *core.Record) (*InboundSyncRe
 		)
 		if err == nil {
 			for _, rec := range localEvents {
-				gid := rec.GetString("google_event_id")
+				evt := proxies.NewEvent(rec)
+				gid := evt.GoogleEventID()
 				if gid == "" {
 					continue
 				}
-				recStart := rec.GetString("start")
+				recStart := evt.Start()
 				if recStartT, _, err := parseDateString(recStart); err == nil {
 					if (recStartT.After(nowUTC.AddDate(0, -1, 0)) || recStartT.Equal(nowUTC.AddDate(0, -1, 0))) &&
 						(recStartT.Before(nowUTC.AddDate(0, 3, 0)) || recStartT.Equal(nowUTC.AddDate(0, 3, 0))) {
 						if !activeGoogleIDs[gid] {
-							if err := app.Delete(rec); err == nil {
+							if err := app.Delete(evt); err == nil {
 								eventsDeleted++
 							}
 						}
@@ -1628,11 +2233,20 @@ func runInboundGoogleSync(app core.App, authRecord *core.Record) (*InboundSyncRe
 		}
 	}
 
+	inboundMsg := ""
+	if eventsCreated == 0 && eventsUpdated == 0 && eventsDeleted == 0 {
+		inboundMsg = fmt.Sprintf("Google Calendar events up to date (%d calendars, %d events evaluated).", calendarsSynced, eventsSynced)
+	} else {
+		inboundMsg = fmt.Sprintf("Synced %d calendars from Google Calendar (%d created, %d updated, %d removed).", calendarsSynced, eventsCreated, eventsUpdated, eventsDeleted)
+	}
+
 	return &InboundSyncResponse{
 		Success:         true,
 		CalendarsSynced: calendarsSynced,
 		EventsSynced:    eventsSynced,
+		EventsCreated:   eventsCreated,
+		EventsUpdated:   eventsUpdated,
 		EventsDeleted:   eventsDeleted,
-		Message:         fmt.Sprintf("Successfully synced %d calendars and %d events from Google Calendar.", calendarsSynced, eventsSynced),
+		Message:         inboundMsg,
 	}, nil
 }

@@ -471,6 +471,11 @@ const timedEventsByDate = $derived.by(() => {
 	const map = new Map<string, FormattedTimedEvent[]>();
 	const calendarMap = getCalendarMap();
 
+	const taskMap = new Map<string, TaskRecord>();
+	for (const t of dataState.tasks) {
+		taskMap.set(t.id, t);
+	}
+
 	const dateItemsMap = new Map<string, EventRecord[]>();
 
 	for (const pe of dataState.events) {
@@ -534,10 +539,26 @@ const timedEventsByDate = $derived.by(() => {
 			const topPercent = Math.min(95, Math.max(4.0, ((1 + startMin / 60) / 25) * 100));
 			const heightPercent = Math.max(2.0, Math.min(25, (durationMin / 60 / 25) * 100));
 
-			const color = pe.color || resolveCalendarColor(cal || pe.expand?.calendar);
+			const calColor = resolveCalendarColor(cal || pe.expand?.calendar);
+			const color = pe.color || calColor;
 			const timeStr = `${startD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} - ${endD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 
-			const isTaskBlock = Boolean(pe.task);
+			const isTaskBlock = Boolean(pe.task || pe.expand?.task);
+			const rawTaskVal: any = pe.task;
+			let taskId = "";
+			if (typeof rawTaskVal === "string") {
+				taskId = rawTaskVal;
+			} else if (Array.isArray(rawTaskVal) && rawTaskVal.length > 0) {
+				taskId = typeof rawTaskVal[0] === "string" ? rawTaskVal[0] : rawTaskVal[0]?.id || "";
+			} else if (rawTaskVal && typeof rawTaskVal === "object" && "id" in rawTaskVal) {
+				taskId = rawTaskVal.id;
+			} else if (pe.expand?.task?.id) {
+				taskId = pe.expand.task.id;
+			}
+
+			const linkedTask = taskId ? (taskMap.get(taskId) || pe.expand?.task) : pe.expand?.task;
+			const isTaskDone = Boolean(isTaskBlock && linkedTask && linkedTask.status === "done");
+
 			const source: "google" | "canvas" | "internal" = pe.google_event_id
 				? "google"
 				: isTaskBlock
@@ -551,6 +572,7 @@ const timedEventsByDate = $derived.by(() => {
 				timeStr,
 				calendarName: calName,
 				color,
+				calendarColor: calColor,
 				topPercent,
 				heightPercent,
 				startMin,
@@ -560,7 +582,8 @@ const timedEventsByDate = $derived.by(() => {
 				widthPercent: 100,
 				description: pe.description,
 				isTaskBlock,
-				taskId: pe.task,
+				isTaskDone,
+				taskId: taskId || pe.task,
 				source,
 				rawEvent: pe,
 			});

@@ -207,6 +207,22 @@ func (s *SyncStatus) SetGoogleExportEnabled(enabled bool) {
 	s.Set("google_export_enabled", enabled)
 }
 
+func (s *SyncStatus) GoogleTagsSyncedAt() string {
+	return s.GetString("google_tags_synced_at")
+}
+
+func (s *SyncStatus) SetGoogleTagsSyncedAt(syncedAt string) {
+	s.Set("google_tags_synced_at", syncedAt)
+}
+
+func (s *SyncStatus) GoogleExportCalendarID() string {
+	return s.GetString("google_export_calendar_id")
+}
+
+func (s *SyncStatus) SetGoogleExportCalendarID(calID string) {
+	s.Set("google_export_calendar_id", calID)
+}
+
 // History Log Field
 
 func (s *SyncStatus) History() []SyncHistoryEntry {

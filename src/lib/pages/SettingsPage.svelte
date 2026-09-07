@@ -10,10 +10,10 @@
 	import { fly, fade } from "svelte/transition";
 </script>
 
-<div class="absolute inset-0 flex flex-col overflow-hidden bg-background">
+<div class="absolute inset-0 flex flex-col overflow-hidden">
 	<!-- Top header bar that slides in and out from the top -->
 	<header
-		class="flex h-14 items-center gap-3 border-b border-border px-6 shrink-0 bg-background z-10"
+		class="flex h-14 items-center gap-3 border-b border-border px-6 shrink-0 z-10 bg-sidebar"
 		transition:fly={{ y: -56, duration: 300 }}
 	>
 		<Button

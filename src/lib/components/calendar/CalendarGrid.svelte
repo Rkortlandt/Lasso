@@ -3,9 +3,19 @@
 	import { fade } from "svelte/transition";
 	import MegaphoneIcon from "@lucide/svelte/icons/megaphone";
 	import X from "@lucide/svelte/icons/x";
-	import { isToday, getLocalTimeZone, type CalendarDate, type DateValue } from "@internationalized/date";
+	import {
+		isToday,
+		getLocalTimeZone,
+		type CalendarDate,
+		type DateValue,
+	} from "@internationalized/date";
 	import { dragState } from "$lib/dragState.svelte";
-	import type { DayItem, FormattedTimedEvent, FormattedDeadline, FormattedAnnouncement } from "./calendarTypes";
+	import type {
+		DayItem,
+		FormattedTimedEvent,
+		FormattedDeadline,
+		FormattedAnnouncement,
+	} from "./calendarTypes";
 
 	interface DragHoverState {
 		colDateKey: string;
@@ -31,9 +41,18 @@
 		getDayTimedEvents: (date: DateValue) => FormattedTimedEvent[];
 		getDayDeadlines: (date: DateValue) => FormattedDeadline[];
 		getDayAnnouncements: (date: DateValue) => FormattedAnnouncement[];
-		onDropTask: (payload: any, date: CalendarDate, startHour: number, startMin: number) => void;
+		onDropTask: (
+			payload: any,
+			date: CalendarDate,
+			startHour: number,
+			startMin: number,
+		) => void;
 		onDeleteEvent: (evt: FormattedTimedEvent) => void;
-		onSelectItem?: (item: any, type: "event" | "announcement" | "deadline", visibleColIndex: number) => void;
+		onSelectItem?: (
+			item: any,
+			type: "event" | "announcement" | "deadline",
+			visibleColIndex: number,
+		) => void;
 	}
 
 	let {
@@ -294,6 +313,9 @@
 
 							<!-- Timed blocks: Google personal calendar events & Canvas task work sessions -->
 							{#each timedEvents as evt (evt.id)}
+								{@const isCompletedWorkSession = Boolean(
+									evt.isTaskBlock && evt.isTaskDone,
+								)}
 								<div
 									role="button"
 									tabindex="0"
@@ -318,10 +340,14 @@
 								>
 									<!-- Inner event pill -->
 									<div
-										class="w-full h-full rounded-md px-1.5 py-0.5 overflow-hidden transition-all duration-150 border text-[10px] font-medium leading-tight flex flex-col justify-start hover:ring-1 hover:ring-primary/40 shadow-xs relative"
+										class="w-full h-full rounded-md px-1.5 py-0.5 overflow-hidden transition-all duration-150 border text-[10px] font-medium leading-tight flex flex-col justify-start hover:ring-1 hover:ring-primary/40 shadow-xs relative border-3"
 										style="
-											background-color: {evt.color || '#3b82f6'};
-											border-color: {evt.color || '#3b82f6'};
+											background-color: {isCompletedWorkSession
+											? `color-mix(in srgb, ${evt.calendarColor || evt.color || '#3b82f6'} 70%, black)`
+											: evt.color || '#3b82f6'};
+											border-color: {isCompletedWorkSession
+											? evt.calendarColor || evt.color || '#3b82f6'
+											: evt.color || '#3b82f6'};
 											color: white;
 										"
 									>
@@ -334,7 +360,20 @@
 											>
 												{evt.title}
 											</span>
-
+										</div>
+										<div
+											class="flex items-center justify-between gap-1 min-w-0 w-full"
+										>
+											<!-- Line 2: Time on new line if big enough (omitted if small) -->
+											{#if evt.heightPercent >= 3.0 && evt.widthPercent >= 28}
+												<span
+													class="truncate text-[9px] text-white font-medium leading-tight mt-0.5"
+												>
+													{evt.widthPercent > 60
+														? evt.timeStr
+														: evt.timeStr.split("-")[0].trim()}
+												</span>
+											{/if}
 											{#if evt.isTaskBlock}
 												<button
 													type="button"
@@ -349,17 +388,6 @@
 												</button>
 											{/if}
 										</div>
-
-										<!-- Line 2: Time on new line if big enough (omitted if small) -->
-										{#if evt.heightPercent >= 3.0 && evt.widthPercent >= 28}
-											<span
-												class="truncate text-[9px] text-white/85 font-medium leading-tight mt-0.5"
-											>
-												{evt.widthPercent > 60
-													? evt.timeStr
-													: evt.timeStr.split("-")[0].trim()}
-											</span>
-										{/if}
 									</div>
 
 									<!-- Hover Details Card (solid, zero transparency) -->
@@ -386,8 +414,12 @@
 											</div>
 											{#if evt.isTaskBlock}
 												<span
-													class="text-[9px] px-1.5 py-0.5 rounded bg-primary/10 text-primary shrink-0 font-medium"
-													>Work Session</span
+													class="text-[9px] px-1.5 py-0.5 rounded {isCompletedWorkSession
+														? 'bg-emerald-500/10 text-emerald-500'
+														: 'bg-primary/10 text-primary'} shrink-0 font-medium"
+													>{isCompletedWorkSession
+														? "Completed Work Session"
+														: "Work Session"}</span
 												>
 											{:else if evt.source === "google"}
 												<span
@@ -401,9 +433,7 @@
 												>
 											{/if}
 										</div>
-										<p
-											class="font-medium text-xs text-foreground leading-snug"
-										>
+										<p class="font-medium text-xs text-foreground leading-snug">
 											{evt.title}
 										</p>
 										<div
@@ -523,9 +553,7 @@
 										</div>
 
 										<!-- Announcement Title -->
-										<p
-											class="font-medium text-xs leading-snug text-foreground"
-										>
+										<p class="font-medium text-xs leading-snug text-foreground">
 											{ann.title}
 										</p>
 
@@ -661,9 +689,7 @@
 													? 'text-emerald-500'
 													: 'text-amber-500'}"
 											>
-												{dl.status === "done"
-													? "✓ Completed"
-													: "Due Deadline"}
+												{dl.status === "done" ? "✓ Completed" : "Due Deadline"}
 											</span>
 											{#if dl.priority}
 												<span

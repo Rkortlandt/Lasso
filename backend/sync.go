@@ -1,13 +1,16 @@
 package main
 
 import (
-	"encoding/json"
+	"backend/proxies"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 )
+
+var syncStatusMu sync.Mutex
 
 type SyncOperation string
 
@@ -17,37 +20,27 @@ const (
 	SyncOpGoogleExport SyncOperation = "google_export"
 )
 
-type SyncHistoryLogEntry struct {
-	ID         string `json:"id"`
-	Service    string `json:"service"`
-	Status     string `json:"status"`
-	Timestamp  string `json:"timestamp"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
-	Feedback   string `json:"feedback,omitempty"`
-	Error      string `json:"error,omitempty"`
-}
-
 // getOrCreateSyncStatus retrieves the 1:1 singleton sync_status record for a user or creates it if missing.
-func getOrCreateSyncStatus(app core.App, userID string) (*core.Record, error) {
-	record, err := app.FindFirstRecordByFilter("sync_status", "user = {:user}", map[string]any{
+func getOrCreateSyncStatus(app core.App, userID string) (*proxies.SyncStatus, error) {
+	record, err := app.FindFirstRecordByFilter(proxies.CollectionSyncStatus, "user = {:user}", map[string]any{
 		"user": userID,
 	})
 	if err == nil && record != nil {
-		return record, nil
+		return proxies.NewSyncStatus(record), nil
 	}
 
-	col, err := app.FindCollectionByNameOrId("sync_status")
+	col, err := app.FindCollectionByNameOrId(proxies.CollectionSyncStatus)
 	if err != nil {
 		return nil, fmt.Errorf("sync_status collection not found: %w", err)
 	}
 
-	newRec := core.NewRecord(col)
-	newRec.Set("user", userID)
-	newRec.Set("canvas_status", "idle")
-	newRec.Set("google_import_status", "idle")
-	newRec.Set("google_export_status", "idle")
-	newRec.Set("google_export_enabled", true)
-	newRec.Set("history", []any{})
+	newRec := proxies.NewSyncStatusRecord(col)
+	newRec.SetUserID(userID)
+	newRec.SetCanvasStatus(proxies.SyncStatusStateIdle)
+	newRec.SetGoogleImportStatus(proxies.SyncStatusStateIdle)
+	newRec.SetGoogleExportStatus(proxies.SyncStatusStateIdle)
+	newRec.SetGoogleExportEnabled(true)
+	newRec.SetHistory([]proxies.SyncHistoryEntry{})
 
 	if err := app.Save(newRec); err != nil {
 		return nil, fmt.Errorf("failed to create sync_status record: %w", err)
@@ -57,6 +50,9 @@ func getOrCreateSyncStatus(app core.App, userID string) (*core.Record, error) {
 
 // updateSyncStatusRunning marks an operation as "running" so connected frontends react immediately.
 func updateSyncStatusRunning(app core.App, userID string, op SyncOperation) error {
+	syncStatusMu.Lock()
+	defer syncStatusMu.Unlock()
+
 	rec, err := getOrCreateSyncStatus(app, userID)
 	if err != nil {
 		return err
@@ -64,14 +60,14 @@ func updateSyncStatusRunning(app core.App, userID string, op SyncOperation) erro
 
 	switch op {
 	case SyncOpCanvas:
-		rec.Set("canvas_status", "running")
-		rec.Set("canvas_error", "")
+		rec.SetCanvasStatus(proxies.SyncStatusStateRunning)
+		rec.SetCanvasError("")
 	case SyncOpGoogleImport:
-		rec.Set("google_import_status", "running")
-		rec.Set("google_import_error", "")
+		rec.SetGoogleImportStatus(proxies.SyncStatusStateRunning)
+		rec.SetGoogleImportError("")
 	case SyncOpGoogleExport:
-		rec.Set("google_export_status", "running")
-		rec.Set("google_export_error", "")
+		rec.SetGoogleExportStatus(proxies.SyncStatusStateRunning)
+		rec.SetGoogleExportError("")
 	}
 
 	return app.Save(rec)
@@ -87,6 +83,9 @@ func updateSyncStatusFinished(
 	errMsg string,
 	durationMs int64,
 ) error {
+	syncStatusMu.Lock()
+	defer syncStatusMu.Unlock()
+
 	rec, err := getOrCreateSyncStatus(app, userID)
 	if err != nil {
 		return err
@@ -96,53 +95,41 @@ func updateSyncStatusFinished(
 
 	switch op {
 	case SyncOpCanvas:
-		rec.Set("canvas_status", "idle")
+		rec.SetCanvasStatus(proxies.SyncStatusStateIdle)
 		if status == "success" {
-			rec.Set("canvas_synced_at", nowISO)
-			rec.Set("canvas_feedback", feedback)
-			rec.Set("canvas_error", "")
+			rec.SetCanvasSyncedAt(nowISO)
+			rec.SetCanvasFeedback(feedback)
+			rec.SetCanvasError("")
 		} else {
-			rec.Set("canvas_error", errMsg)
+			rec.SetCanvasError(errMsg)
 		}
 	case SyncOpGoogleImport:
-		rec.Set("google_import_status", "idle")
+		rec.SetGoogleImportStatus(proxies.SyncStatusStateIdle)
 		if status == "success" {
-			rec.Set("google_import_synced_at", nowISO)
-			rec.Set("google_import_feedback", feedback)
-			rec.Set("google_import_error", "")
+			rec.SetGoogleImportSyncedAt(nowISO)
+			rec.SetGoogleImportFeedback(feedback)
+			rec.SetGoogleImportError("")
 		} else {
-			rec.Set("google_import_error", errMsg)
+			rec.SetGoogleImportError(errMsg)
 		}
 	case SyncOpGoogleExport:
-		rec.Set("google_export_status", "idle")
+		rec.SetGoogleExportStatus(proxies.SyncStatusStateIdle)
 		if status == "success" {
-			rec.Set("google_export_synced_at", nowISO)
-			rec.Set("google_export_feedback", feedback)
-			rec.Set("google_export_error", "")
+			rec.SetGoogleExportSyncedAt(nowISO)
+			rec.SetGoogleExportFeedback(feedback)
+			rec.SetGoogleExportError("")
 		} else {
-			rec.Set("google_export_error", errMsg)
+			rec.SetGoogleExportError(errMsg)
 		}
 	}
 
 	// Append to history log
-	var history []SyncHistoryLogEntry
-	historyRaw := rec.Get("history")
-	if historyRaw != nil {
-		switch h := historyRaw.(type) {
-		case string:
-			_ = json.Unmarshal([]byte(h), &history)
-		default:
-			bytes, err := json.Marshal(h)
-			if err == nil {
-				_ = json.Unmarshal(bytes, &history)
-			}
-		}
-	}
+	history := rec.History()
 
-	entry := SyncHistoryLogEntry{
+	entry := proxies.SyncHistoryEntry{
 		ID:         fmt.Sprintf("%d", time.Now().UnixNano()),
-		Service:    string(op),
-		Status:     status,
+		Service:    proxies.SyncService(op),
+		Status:     proxies.SyncResult(status),
 		Timestamp:  nowISO,
 		DurationMS: durationMs,
 		Feedback:   feedback,
@@ -150,12 +137,12 @@ func updateSyncStatusFinished(
 	}
 
 	// Prepend most recent entry and cap at 50
-	history = append([]SyncHistoryLogEntry{entry}, history...)
+	history = append([]proxies.SyncHistoryEntry{entry}, history...)
 	if len(history) > 50 {
 		history = history[:50]
 	}
 
-	rec.Set("history", history)
+	rec.SetHistory(history)
 
 	if err := app.Save(rec); err != nil {
 		log.Printf("Failed to save sync_status for user %s: %v", userID, err)

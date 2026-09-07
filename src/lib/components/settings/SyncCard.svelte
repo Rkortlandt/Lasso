@@ -1,25 +1,16 @@
 <script lang="ts">
 	import { dataState } from "$lib/dataState/dataState.svelte";
-	import { syncState } from "$lib/syncState.svelte";
+	import { syncController } from "$lib/syncController.svelte";
 	import { Button } from "$lib/components/ui/button";
 	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
 	import GraduationCapIcon from "@lucide/svelte/icons/graduation-cap";
 	import CalendarIcon from "@lucide/svelte/icons/calendar";
 	import UploadCloudIcon from "@lucide/svelte/icons/upload-cloud";
+	import ArrowDownIcon from "@lucide/svelte/icons/arrow-down";
 	import CheckIcon from "@lucide/svelte/icons/check";
 	import AlertCircleIcon from "@lucide/svelte/icons/alert-circle";
-	import SyncSquareButton from "./SyncSquareButton.svelte";
+	import SyncServiceCard from "./SyncServiceCard.svelte";
 	import { fade } from "svelte/transition";
-
-	const isCanvasActive = $derived(
-		Boolean(dataState.canvasSyncedAt) || syncState.canvasSynced,
-	);
-	const isGoogleInActive = $derived(
-		Boolean(dataState.googleImportSyncedAt) || syncState.googleInSynced,
-	);
-	const isGoogleOutActive = $derived(
-		Boolean(dataState.googleExportSyncedAt) || syncState.googleOutSynced,
-	);
 
 	function parseSyncDate(dateStr?: string | null): Date | null {
 		if (!dateStr) return null;
@@ -35,266 +26,219 @@
 		parseSyncDate(dataState.googleExportSyncedAt),
 	);
 
-	// Dotted trail fill percentages (0 to 100)
-	let trail1Progress = $state(0);
-	let trail2Progress = $state(0);
+	const isAnySyncing = $derived(syncController.isAnySyncing);
 
-	const isAnySyncing = $derived(syncState.isAnySyncing);
+	const isCanvasSyncing = $derived(
+		dataState.isCanvasSyncing ||
+			syncController.isSyncingCanvas ||
+			(syncController.isSyncingAll && syncController.syncingStage === 1),
+	);
 
-	function formatTime(date: Date | null): string {
-		if (!date || isNaN(date.getTime())) return "Never";
-		return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-	}
+	const isGoogleInSyncing = $derived(
+		dataState.isGoogleImporting ||
+			syncController.isSyncingGoogleIn ||
+			(syncController.isSyncingAll && syncController.syncingStage === 1),
+	);
 
-	function animateTrail(
-		trailNum: 1 | 2,
-		durationMs: number = 750,
-	): Promise<void> {
-		return new Promise((resolve) => {
-			if (trailNum === 1) trail1Progress = 0;
-			if (trailNum === 2) trail2Progress = 0;
-			const startTime = performance.now();
-			function step(now: number) {
-				const elapsed = now - startTime;
-				const p = Math.min(100, Math.round((100 * elapsed) / durationMs));
-				if (trailNum === 1) trail1Progress = p;
-				if (trailNum === 2) trail2Progress = p;
-				if (p < 100) {
-					requestAnimationFrame(step);
-				} else {
-					resolve();
-				}
-			}
-			requestAnimationFrame(step);
-		});
-	}
+	const isGoogleOutSyncing = $derived(
+		dataState.isGoogleExporting ||
+			syncController.isSyncingGoogleOut ||
+			(syncController.isSyncingAll && syncController.syncingStage === 2),
+	);
 
 	async function handleSyncCanvas() {
 		if (isAnySyncing) return;
 		try {
-			await syncState.syncCanvas();
-			if (isGoogleInActive) {
-				await animateTrail(1, 600);
-			}
+			await syncController.syncCanvas();
 		} catch (e) {
-			// error is tracked in syncState.syncAllError
-		} finally {
-			trail1Progress = 0;
+			// error tracked in syncController.syncAllError
 		}
 	}
 
 	async function handleSyncFromGoogle() {
 		if (isAnySyncing) return;
 		try {
-			await syncState.syncFromGoogle();
-			if (isCanvasActive) {
-				await animateTrail(1, 600);
-			}
-			if (isGoogleOutActive) {
-				await animateTrail(2, 600);
-			}
+			await syncController.syncFromGoogle();
 		} catch (e) {
-			// error is tracked in syncState.syncAllError
-		} finally {
-			trail1Progress = 0;
-			trail2Progress = 0;
+			// error tracked in syncController.syncAllError
 		}
 	}
 
 	async function handleSyncToGoogle() {
 		if (isAnySyncing) return;
 		try {
-			await syncState.syncToGoogle();
-			if (isGoogleInActive) {
-				await animateTrail(2, 600);
-			}
+			await syncController.syncToGoogle();
 		} catch (e) {
-			// error is tracked in syncState.syncAllError
-		} finally {
-			trail2Progress = 0;
+			// error tracked in syncController.syncAllError
 		}
 	}
 
 	async function handleSyncAll() {
 		if (isAnySyncing) return;
-		trail1Progress = 0;
-		trail2Progress = 0;
-
 		try {
-			await syncState.syncAll({
-				onStepChange: async (step) => {
-					if (step === "google-in" && isCanvasActive) {
-						await animateTrail(1, 750);
-					} else if (step === "google-out") {
-						await animateTrail(2, 750);
-					}
-				},
-			});
-		} finally {
-			trail1Progress = 0;
-			trail2Progress = 0;
+			await syncController.syncAll();
+		} catch (e) {
+			// error tracked in syncController.syncAllError
 		}
 	}
 </script>
 
-<div class="rounded-xl border border-border bg-card p-6 shadow-xs space-y-5">
+<div class="rounded-xl border border-border bg-card p-5 sm:p-6 shadow-xs space-y-4">
 	<!-- Header -->
-	<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-		<div class="flex items-center gap-3">
-			<div>
-				<h2
-					class="text-base font-normal tracking-wide text-card-foreground leading-none"
-				>
-					Data Synchronization
-				</h2>
-			</div>
-		</div>
+	<div class="flex items-center justify-between gap-3">
+		<h2
+			class="text-base font-normal tracking-wide text-card-foreground leading-none"
+		>
+			Data Synchronization
+		</h2>
 
-		<!-- Status & Sync All Button -->
-		<div class="flex items-center gap-2 self-start sm:self-center">
-			<Button
-				size="sm"
-				class="text-xs h-7 px-3 cursor-pointer gap-1.5 shrink-0 bg-primary text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
-				onclick={handleSyncAll}
-				disabled={(!syncState.isCanvasConnected &&
-					!syncState.isGoogleConnected) ||
-					isAnySyncing}
-				title="Run full pipeline sync"
-			>
-				<RefreshCwIcon class="size-3" />
-				<span>{syncState.isSyncingAll ? "Syncing..." : "Sync All"}</span>
-			</Button>
-		</div>
+		<!-- Global Sync All Button -->
+		<Button
+			size="sm"
+			class="text-xs h-7 px-3 cursor-pointer gap-1.5 shrink-0 bg-primary text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
+			onclick={handleSyncAll}
+			disabled={(!syncController.isCanvasConnected &&
+				!syncController.isGoogleConnected) ||
+				isAnySyncing}
+			title="Run full sync pipeline"
+		>
+			<RefreshCwIcon
+				class="size-3 {syncController.isSyncingAll ? 'animate-spin' : ''}"
+			/>
+			<span>
+				{#if syncController.isSyncingAll}
+					{#if syncController.syncingStage === 1}
+						Importing...
+					{:else if syncController.syncingStage === 2}
+						Exporting...
+					{:else}
+						Syncing...
+					{/if}
+				{:else}
+					Sync All
+				{/if}
+			</span>
+		</Button>
 	</div>
 
-	<!-- Action Feedback Messages -->
-	{#if syncState.syncAllMessage}
+	<!-- Stage 1: Inbound Import -->
+	<div class="space-y-2 pt-1">
 		<div
-			class="flex items-center gap-2 text-xs text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 rounded-md px-3 py-2"
-			in:fade={{ duration: 150 }}
+			class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider"
 		>
-			<CheckIcon class="size-4 shrink-0" />
-			<span>{syncState.syncAllMessage}</span>
+			Import to Lasso
 		</div>
-	{/if}
 
-	{#if syncState.syncAllError}
-		<div
-			class="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2"
-			in:fade={{ duration: 150 }}
-		>
-			<AlertCircleIcon class="size-4 shrink-0" />
-			<span>{syncState.syncAllError}</span>
-		</div>
-	{/if}
-
-	<!-- Linear Data Sync Pipeline (Arranged in a line, square parts, icon background, animated dotted trail) -->
-	<div class="py-2">
-		<div
-			class="flex items-center justify-center gap-1.5 sm:gap-3 w-full {dataState.isGoogleExportEnabled
-				? 'max-w-2xl'
-				: 'max-w-md sm:max-w-lg'} mx-auto transition-all duration-300"
-		>
-			<!-- Part 1: Canvas LMS -->
-			<SyncSquareButton
+		<div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+			<SyncServiceCard
 				title="Canvas LMS"
-				description="Import coursework"
 				icon={GraduationCapIcon}
-				isSynced={isCanvasActive}
-				isSyncing={dataState.isCanvasSyncing ||
-					syncState.isSyncingCanvas ||
-					syncState.syncingStep === "canvas"}
-				syncingLabel="Syncing"
-				isConnected={syncState.isCanvasConnected}
+				iconClass="bg-rose-500/10 text-rose-600 dark:text-rose-400"
+				isConnected={syncController.isCanvasConnected}
+				isSyncing={isCanvasSyncing}
 				lastSynced={canvasLastSynced}
 				disabled={isAnySyncing}
 				onclick={handleSyncCanvas}
 			/>
 
-			<!-- Trail 1: Animated Dotted Trail between Canvas and Google In -->
-			<div
-				class="shrink-0 w-14 sm:w-24 flex items-center justify-evenly px-1 sm:px-2"
-			>
-				{#each Array(6) as _, i}
-					{@const isDotActive =
-						isAnySyncing && trail1Progress >= ((i + 0.5) / 6) * 100}
-					<div
-						class="size-1.5 sm:size-2 rounded-full transition-all duration-300 {isDotActive
-							? 'bg-primary dot-primary-wave'
-							: 'bg-zinc-300 dark:bg-zinc-700'}"
-						style="--dot-idx: {i};"
-					></div>
-				{/each}
-			</div>
-
-			<!-- Part 2: Google Inbound -->
-			<SyncSquareButton
-				title="Google Import"
-				description="Fetch calendars"
+			<SyncServiceCard
+				title="Google Calendar"
 				icon={CalendarIcon}
-				isSynced={isGoogleInActive}
-				isSyncing={dataState.isGoogleImporting ||
-					syncState.isSyncingGoogleIn ||
-					syncState.syncingStep === "google-in"}
-				syncingLabel="Fetching"
-				isConnected={syncState.isGoogleConnected}
+				iconClass="bg-blue-500/10 text-blue-600 dark:text-blue-400"
+				isConnected={syncController.isGoogleConnected}
+				isSyncing={isGoogleInSyncing}
 				lastSynced={googleImportLastSynced}
 				disabled={isAnySyncing}
 				onclick={handleSyncFromGoogle}
 			/>
-
-			{#if dataState.isGoogleExportEnabled}
-				<!-- Trail 2: Animated Dotted Trail between Google In and Google Out -->
-				<div
-					class="shrink-0 w-14 sm:w-24 flex items-center justify-evenly px-1 sm:px-2"
-				>
-					{#each Array(6) as _, i}
-						{@const isDotActive =
-							isAnySyncing && trail2Progress >= ((i + 0.5) / 6) * 100}
-						<div
-							class="size-1.5 sm:size-2 rounded-full transition-all duration-300 {isDotActive
-								? 'bg-primary dot-primary-wave'
-								: 'bg-zinc-300 dark:bg-zinc-700'}"
-							style="--dot-idx: {i + 6};"
-						></div>
-					{/each}
-				</div>
-
-				<!-- Part 3: Google Outbound -->
-				<SyncSquareButton
-					title="Google Export"
-					description="Push tasks"
-					icon={UploadCloudIcon}
-					isSynced={isGoogleOutActive}
-					isSyncing={dataState.isGoogleExporting ||
-						syncState.isSyncingGoogleOut ||
-						syncState.syncingStep === "google-out"}
-					syncingLabel="Pushing"
-					isConnected={syncState.isGoogleConnected}
-					lastSynced={googleExportLastSynced}
-					disabled={isAnySyncing}
-					onclick={handleSyncToGoogle}
-				/>
-			{/if}
 		</div>
 	</div>
+
+	<!-- Stage Flow Indicator -->
+	<div class="flex items-center justify-center py-0.5">
+		<div
+			class="flex items-center gap-1.5 text-[10px] text-muted-foreground font-medium uppercase tracking-wider"
+		>
+			<span>Then</span>
+			<ArrowDownIcon class="size-3 text-muted-foreground/80" />
+		</div>
+	</div>
+
+	<!-- Stage 2: Outbound Export -->
+	<div class="space-y-2">
+		<div
+			class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider"
+		>
+			Export from Lasso
+		</div>
+
+		<div>
+			<SyncServiceCard
+				title="Google Calendar Export"
+				icon={UploadCloudIcon}
+				iconClass="bg-blue-500/10 text-blue-600 dark:text-blue-400"
+				isConnected={syncController.isGoogleConnected}
+				isEnabled={dataState.isGoogleExportEnabled}
+				isSyncing={isGoogleOutSyncing}
+				lastSynced={googleExportLastSynced}
+				disabled={isAnySyncing}
+				onclick={handleSyncToGoogle}
+			/>
+		</div>
+	</div>
+
+	<!-- Error / Status Readouts at the bottom of the card -->
+	{#if syncController.syncAllMessage || syncController.syncAllError || dataState.canvasSyncError || dataState.googleImportError || dataState.googleExportError}
+		<div class="pt-2 border-t border-border/40 space-y-2">
+			{#if syncController.syncAllMessage}
+				<div
+					class="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-md px-3 py-2"
+					in:fade={{ duration: 150 }}
+				>
+					<CheckIcon class="size-3.5 shrink-0" />
+					<span>{syncController.syncAllMessage}</span>
+				</div>
+			{/if}
+
+			{#if syncController.syncAllError}
+				<div
+					class="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2"
+					in:fade={{ duration: 150 }}
+				>
+					<AlertCircleIcon class="size-3.5 shrink-0" />
+					<span>{syncController.syncAllError}</span>
+				</div>
+			{/if}
+
+			{#if dataState.canvasSyncError && !syncController.syncAllError}
+				<div
+					class="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2"
+					in:fade={{ duration: 150 }}
+				>
+					<AlertCircleIcon class="size-3.5 shrink-0" />
+					<span>Canvas: {dataState.canvasSyncError}</span>
+				</div>
+			{/if}
+
+			{#if dataState.googleImportError && !syncController.syncAllError}
+				<div
+					class="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2"
+					in:fade={{ duration: 150 }}
+				>
+					<AlertCircleIcon class="size-3.5 shrink-0" />
+					<span>Google Import: {dataState.googleImportError}</span>
+				</div>
+			{/if}
+
+			{#if dataState.googleExportError && !syncController.syncAllError}
+				<div
+					class="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2"
+					in:fade={{ duration: 150 }}
+				>
+					<AlertCircleIcon class="size-3.5 shrink-0" />
+					<span>Google Export: {dataState.googleExportError}</span>
+				</div>
+			{/if}
+		</div>
+	{/if}
 </div>
-
-<style>
-	@keyframes dotWave {
-		0%,
-		100% {
-			transform: scale(1);
-			opacity: 0.8;
-		}
-		50% {
-			transform: scale(1.3);
-			opacity: 1;
-		}
-	}
-
-	.dot-primary-wave {
-		animation: dotWave 1.4s ease-in-out infinite;
-		animation-delay: calc(var(--dot-idx) * 140ms);
-	}
-</style>

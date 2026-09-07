@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { pb, POCKETBASE_URL } from "$lib/pocketbase";
 	import { authState } from "$lib/authState.svelte";
-	import { syncState } from "$lib/syncState.svelte";
+	import { syncController } from "$lib/syncController.svelte";
 	import { Button } from "$lib/components/ui/button";
 	import BookOpenIcon from "@lucide/svelte/icons/book-open";
 	import CalendarIcon from "@lucide/svelte/icons/calendar";
@@ -18,6 +18,8 @@
 	import { dataState } from "$lib/dataState/dataState.svelte";
 	import {
 		getCourseworkCalendars,
+		getCurrentCourseworkCalendars,
+		getPreviousCourseworkCalendars,
 		resolveCalendarColor,
 	} from "$lib/dataState/calendarQueries.svelte";
 	import { type CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
@@ -32,6 +34,9 @@
 
 	const isConnected = $derived(Boolean(authState.record?.canvas_connected));
 	const courses = $derived(getCourseworkCalendars());
+	const currentCourses = $derived(getCurrentCourseworkCalendars());
+	const previousCourses = $derived(getPreviousCourseworkCalendars());
+	let isPreviousCoursesExpanded = $state(false);
 
 	// Section detail & nickname state
 	let expandedCourseId = $state<string | null>(null);
@@ -52,6 +57,18 @@
 
 	function getSwatch(idx: number): string {
 		return swatchColors[idx % swatchColors.length];
+	}
+
+	function formatCourseDate(dateStr?: string): string {
+		if (!dateStr || !dateStr.trim()) return "—";
+		const normalized = dateStr.includes("T") ? dateStr : dateStr.replace(" ", "T");
+		const d = new Date(normalized);
+		if (isNaN(d.getTime())) return dateStr;
+		return d.toLocaleDateString(undefined, {
+			year: "numeric",
+			month: "short",
+			day: "numeric",
+		});
 	}
 
 	function toggleExpand(course: CalendarRecord) {
@@ -163,7 +180,7 @@
 			}
 
 			await pb.collection("users").authRefresh();
-			await syncState.syncCanvas().catch(() => {});
+			await syncController.syncCanvas().catch(() => {});
 			await dataState.refresh();
 			showConnectForm = false;
 			canvasToken = "";
@@ -208,7 +225,7 @@
 	async function handleSyncCanvas() {
 		syncAlert = null;
 		try {
-			const res = await syncState.syncCanvas();
+			const res = await syncController.syncCanvas();
 			syncAlert = {
 				type: "success",
 				message:
@@ -307,25 +324,85 @@
 				</div>
 			{/if}
 
-			{#if courses.length > 0}
-				<div class="pt-2">
-					<!-- Filter Header -->
-					<div
-						class="flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-					>
-						<div class="flex items-center gap-2">
-							<span class="text-xs text-foreground uppercase font-bold"
-								>Course Sections ({courses.length})</span
+			{#if currentCourses.length > 0 || previousCourses.length > 0}
+				<div class="pt-2 space-y-4">
+					{#if currentCourses.length > 0}
+						<div>
+							<!-- Filter Header -->
+							<div
+								class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2"
 							>
-						</div>
-					</div>
+								<div class="flex items-center gap-2">
+									<span class="text-xs text-foreground uppercase font-bold"
+										>Course Sections ({currentCourses.length})</span
+									>
+								</div>
+							</div>
 
-					<!-- Course groups listing with interactive expand panels -->
-					<div class="space-y-2 pt-2">
-						{#each courses as course, idx (course.id)}
-							{@render courseItem(course, getSwatch(idx))}
-						{/each}
-					</div>
+							<!-- Course groups listing with interactive expand panels -->
+							<div class="space-y-2">
+								{#each currentCourses as course, idx (course.id)}
+									{@render courseItem(course, getSwatch(idx))}
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					<!-- Previous Courses Collapsible Section (hidden/collapsed by default) -->
+					{#if previousCourses.length > 0}
+						<div class="pt-2">
+							<!-- Divider with close / toggle badge button like sidebar main dropdowns -->
+							<div class="relative flex w-full my-1 items-center">
+								<button
+									type="button"
+									onclick={() =>
+										(isPreviousCoursesExpanded = !isPreviousCoursesExpanded)}
+									class="shrink-0 cursor-pointer text-left pr-2"
+								>
+									<span
+										class="text-xs text-foreground uppercase font-bold hover:text-primary transition-colors"
+									>
+										Previous Courses ({previousCourses.length})
+									</span>
+								</button>
+								<div class="w-full h-full border-t border-border"></div>
+								<div class="w-8 flex items-center justify-center shrink-0">
+									<button
+										type="button"
+										onclick={() =>
+											(isPreviousCoursesExpanded = !isPreviousCoursesExpanded)}
+										class="relative flex items-center justify-center rounded-full border border-border bg-accent text-foreground hover:bg-accent/80 hover:text-primary transition-all cursor-pointer shadow-2xs h-4.5 px-2 gap-1"
+										aria-label={isPreviousCoursesExpanded
+											? "Close previous courses"
+											: "Open previous courses"}
+										title={isPreviousCoursesExpanded
+											? "Close previous courses"
+											: "Open previous courses"}
+									>
+										<ChevronDownIcon
+											class="size-2.5 transition-transform duration-200 {isPreviousCoursesExpanded
+												? 'rotate-180'
+												: ''}"
+										/>
+									</button>
+								</div>
+							</div>
+
+							{#if isPreviousCoursesExpanded}
+								<div
+									transition:slide={{ duration: 180 }}
+									class="space-y-2 mt-2"
+								>
+									{#each previousCourses as course, idx (course.id)}
+										{@render courseItem(
+											course,
+											getSwatch(currentCourses.length + idx),
+										)}
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{/if}
 				</div>
 			{/if}
 
@@ -603,6 +680,26 @@
 							title={course.name}
 						>
 							{course.name}
+						</span>
+					</div>
+
+					<div class="flex flex-col gap-0.5">
+						<span class="text-muted-foreground">Start Date</span>
+						<span
+							class="font-mono text-foreground font-medium truncate"
+							title={formatCourseDate(course.start_date)}
+						>
+							{formatCourseDate(course.start_date)}
+						</span>
+					</div>
+
+					<div class="flex flex-col gap-0.5">
+						<span class="text-muted-foreground">End Date</span>
+						<span
+							class="font-mono text-foreground font-medium truncate"
+							title={formatCourseDate(course.end_date)}
+						>
+							{formatCourseDate(course.end_date)}
 						</span>
 					</div>
 				</div>
