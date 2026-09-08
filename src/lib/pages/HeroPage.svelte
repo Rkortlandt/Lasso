@@ -51,7 +51,7 @@
 	$effect(() => {
 		const timer = setInterval(() => {
 			now = new Date();
-		}, 1000); // 1-second interval to follow exact live time
+		}, 15000); // 15-second interval: smooth for time percent without continuous 1s render thrashing
 		return () => clearInterval(timer);
 	});
 

@@ -1,5 +1,6 @@
 export interface EventRecord {
 	id: string;
+	_clientId?: string;
 	calendar?: string;
 	task?: string;
 	title: string;
@@ -49,6 +50,7 @@ export interface CalendarRecord {
 
 export interface TaskRecord {
 	id: string;
+	_clientId?: string;
 	user?: string;
 	calendar?: string | string[] | Record<string, any>;
 	calendar_id?: string | string[];

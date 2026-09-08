@@ -54,6 +54,9 @@ const announcementTitlesSet = $derived.by(() => {
 	return set;
 });
 
+const EMPTY_DEADLINES: FormattedDeadline[] = [];
+const cachedDeadlinesByDate = new Map<string, { hash: string; items: FormattedDeadline[] }>();
+
 /**
  * Pre-indexes deadlines by date key ("YYYY-M-D").
  */
@@ -121,6 +124,17 @@ const deadlinesByDate = $derived.by(() => {
 	for (const key of allKeys) {
 		const dayTasks = tasksGrouped.get(key) || [];
 		const dayDeadlineEvents = eventsGrouped.get(key) || [];
+
+		const dateHash =
+			dayTasks.map((t) => `${t.id}:${t.status}:${t.name}:${t.due_date || t.fake_due_date}`).join("|") +
+			"~" +
+			dayDeadlineEvents.map((e) => `${e.id}:${e.start}:${e.title}`).join("|");
+
+		const cached = cachedDeadlinesByDate.get(key);
+		if (cached && cached.hash === dateHash) {
+			map.set(key, cached.items);
+			continue;
+		}
 
 		const seenNames = new Set<string>();
 		const uniqueTasks = dayTasks.filter((t) => {
@@ -275,7 +289,9 @@ const deadlinesByDate = $derived.by(() => {
 			});
 		}
 
-		map.set(key, [...daytimeItems, ...endOfDayItems]);
+		const result = [...daytimeItems, ...endOfDayItems];
+		cachedDeadlinesByDate.set(key, { hash: dateHash, items: result });
+		map.set(key, result);
 	}
 
 	return map;
@@ -283,8 +299,11 @@ const deadlinesByDate = $derived.by(() => {
 
 export function getDayDeadlines(date: DateValue): FormattedDeadline[] {
 	const key = `${date.year}-${date.month}-${date.day}`;
-	return deadlinesByDate.get(key) || [];
+	return deadlinesByDate.get(key) || EMPTY_DEADLINES;
 }
+
+const EMPTY_ANNOUNCEMENTS: FormattedAnnouncement[] = [];
+const cachedAnnouncementsByDate = new Map<string, { hash: string; items: FormattedAnnouncement[] }>();
 
 /**
  * Pre-indexes announcements by date key ("YYYY-M-D").
@@ -316,6 +335,13 @@ const announcementsByDate = $derived.by(() => {
 	}
 
 	for (const [key, dayAnnouncements] of announcementsGrouped.entries()) {
+		const dateHash = dayAnnouncements.map((e) => `${e.id}:${e.start}:${e.title}:${e.description || ""}`).join("|");
+		const cached = cachedAnnouncementsByDate.get(key);
+		if (cached && cached.hash === dateHash) {
+			map.set(key, cached.items);
+			continue;
+		}
+
 		const seenTitles = new Set<string>();
 		const uniqueAnnouncements = dayAnnouncements.filter((e) => {
 			const titleKey = e.title.toLowerCase().trim();
@@ -409,7 +435,9 @@ const announcementsByDate = $derived.by(() => {
 			});
 		}
 
-		map.set(key, [...daytimeItems, ...endOfDayItems]);
+		const result = [...daytimeItems, ...endOfDayItems];
+		cachedAnnouncementsByDate.set(key, { hash: dateHash, items: result });
+		map.set(key, result);
 	}
 
 	return map;
@@ -417,8 +445,11 @@ const announcementsByDate = $derived.by(() => {
 
 export function getDayAnnouncements(date: DateValue): FormattedAnnouncement[] {
 	const key = `${date.year}-${date.month}-${date.day}`;
-	return announcementsByDate.get(key) || [];
+	return announcementsByDate.get(key) || EMPTY_ANNOUNCEMENTS;
 }
+
+const EMPTY_ALL_DAY_EVENTS: DayAllDayEvent[] = [];
+const cachedAllDayEventsByDate = new Map<string, { hash: string; items: DayAllDayEvent[] }>();
 
 /**
  * Pre-indexes all-day events by date key ("YYYY-M-D").
@@ -426,6 +457,7 @@ export function getDayAnnouncements(date: DateValue): FormattedAnnouncement[] {
 const allDayEventsByDate = $derived.by(() => {
 	const map = new Map<string, DayAllDayEvent[]>();
 	const calendarMap = getCalendarMap();
+	const grouped = new Map<string, EventRecord[]>();
 
 	for (const e of dataState.events) {
 		if (!e.start || !e.allday || e.deadline || e.announcement) continue;
@@ -441,19 +473,38 @@ const allDayEventsByDate = $derived.by(() => {
 		const evtDate = getTaskLocalDate(e.start, true);
 		if (!evtDate) continue;
 		const key = `${evtDate.year}-${evtDate.month}-${evtDate.day}`;
-		let list = map.get(key);
+		let list = grouped.get(key);
 		if (!list) {
 			list = [];
-			map.set(key, list);
+			grouped.set(key, list);
 		}
-		const dedupeKey = `evt_${e.id}`;
-		if (!list.some((item) => item.id === dedupeKey)) {
-			list.push({
-				id: dedupeKey,
-				title: e.title,
-				color: e.color || calColor || "#3b82f6",
-			});
+		list.push(e);
+	}
+
+	for (const [key, evts] of grouped.entries()) {
+		const hash = evts.map((e) => `${e.id}:${e.title}:${e.color}`).join("|");
+		const cached = cachedAllDayEventsByDate.get(key);
+		if (cached && cached.hash === hash) {
+			map.set(key, cached.items);
+			continue;
 		}
+
+		const items: DayAllDayEvent[] = [];
+		for (const e of evts) {
+			const dedupeKey = `evt_${e.id}`;
+			if (!items.some((item) => item.id === dedupeKey)) {
+				const cal = e.calendar ? calendarMap.get(e.calendar) : undefined;
+				const calColor = resolveCalendarColor(cal || e.expand?.calendar);
+				items.push({
+					id: dedupeKey,
+					title: e.title,
+					color: e.color || calColor || "#3b82f6",
+				});
+			}
+		}
+
+		cachedAllDayEventsByDate.set(key, { hash, items });
+		map.set(key, items);
 	}
 
 	return map;
@@ -461,8 +512,11 @@ const allDayEventsByDate = $derived.by(() => {
 
 export function getAllDayEventsForDate(date: DateValue): DayAllDayEvent[] {
 	const key = `${date.year}-${date.month}-${date.day}`;
-	return allDayEventsByDate.get(key) || [];
+	return allDayEventsByDate.get(key) || EMPTY_ALL_DAY_EVENTS;
 }
+
+const EMPTY_TIMED_EVENTS: FormattedTimedEvent[] = [];
+const cachedTimedEventsByDate = new Map<string, { hash: string; items: FormattedTimedEvent[] }>();
 
 /**
  * Pre-indexes timed events with column clustering and layout geometry.
@@ -506,6 +560,20 @@ const timedEventsByDate = $derived.by(() => {
 	}
 
 	for (const [key, peItems] of dateItemsMap.entries()) {
+		const dateHash = peItems
+			.map((pe) => {
+				const taskId = pe.task;
+				const linkedTask = taskId ? (taskMap.get(taskId) || pe.expand?.task) : pe.expand?.task;
+				return `${pe.id}:${pe.start}:${pe.end}:${pe.title}:${linkedTask?.status}`;
+			})
+			.join("|");
+
+		const cached = cachedTimedEventsByDate.get(key);
+		if (cached && cached.hash === dateHash) {
+			map.set(key, cached.items);
+			continue;
+		}
+
 		const seenKeys = new Set<string>();
 		interface RawTimedItem extends FormattedTimedEvent {
 			startMin: number;
@@ -657,6 +725,7 @@ const timedEventsByDate = $derived.by(() => {
 			}
 		}
 
+		cachedTimedEventsByDate.set(key, { hash: dateHash, items });
 		map.set(key, items);
 	}
 
@@ -665,5 +734,5 @@ const timedEventsByDate = $derived.by(() => {
 
 export function getDayTimedEvents(date: DateValue): FormattedTimedEvent[] {
 	const key = `${date.year}-${date.month}-${date.day}`;
-	return timedEventsByDate.get(key) || [];
+	return timedEventsByDate.get(key) || EMPTY_TIMED_EVENTS;
 }

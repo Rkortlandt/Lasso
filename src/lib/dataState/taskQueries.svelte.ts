@@ -49,9 +49,27 @@ export function sortTasksCompleted(a: TaskRecord, b: TaskRecord): number {
 	return new Date(b.due_date).getTime() - new Date(a.due_date).getTime();
 }
 
+function areTaskArraysEqual(a: TaskRecord[], b: TaskRecord[]): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		if (
+			a[i].id !== b[i].id ||
+			a[i].status !== b[i].status ||
+			a[i].name !== b[i].name ||
+			a[i].due_date !== b[i].due_date
+		) {
+			return false;
+		}
+	}
+	return true;
+}
+
+const cachedCourseGroupsMap = new Map<string, TaskGroup>();
+let lastCourseGroupsArray: TaskGroup[] = [];
+
 /**
  * Groups tasks by coursework calendar with upcoming & completed subsets.
- * Pure reactive derivation from dataState.tasks and dataState.calendars.
+ * Pure reactive derivation with stable reference caching to prevent unnecessary DOM re-renders.
  */
 export function getTasksByCourse(): TaskGroup[] {
 	const courseworkCals = getCourseworkCalendars();
@@ -88,21 +106,44 @@ export function getTasksByCourse(): TaskGroup[] {
 	}
 
 	const groups: TaskGroup[] = [];
+	let allGroupsUnchanged =
+		lastCourseGroupsArray.length === calMap.size && calMap.size > 0;
+
 	for (const cal of calMap.values()) {
 		const calTasks = (taskMap.get(cal.id) || []).sort(sortTasksChronological);
-		const upcomingTasks = calTasks.filter((t) => t.status !== "done");
-		const completedTasks = calTasks.filter((t) => t.status === "done").sort(sortTasksCompleted);
-		const pendingCount = upcomingTasks.length;
+		const prev = cachedCourseGroupsMap.get(cal.id);
 
-		groups.push({
-			calendar: cal,
-			tasks: calTasks,
-			upcomingTasks,
-			completedTasks,
-			pendingCount,
-		});
+		if (
+			prev &&
+			areTaskArraysEqual(calTasks, prev.tasks) &&
+			cal.color === prev.calendar.color &&
+			cal.nickname === prev.calendar.nickname &&
+			cal.name === prev.calendar.name
+		) {
+			groups.push(prev);
+		} else {
+			allGroupsUnchanged = false;
+			const upcomingTasks = calTasks.filter((t) => t.status !== "done");
+			const completedTasks = calTasks
+				.filter((t) => t.status === "done")
+				.sort(sortTasksCompleted);
+			const newGroup: TaskGroup = {
+				calendar: cal,
+				tasks: calTasks,
+				upcomingTasks,
+				completedTasks,
+				pendingCount: upcomingTasks.length,
+			};
+			cachedCourseGroupsMap.set(cal.id, newGroup);
+			groups.push(newGroup);
+		}
 	}
 
+	if (allGroupsUnchanged) {
+		return lastCourseGroupsArray;
+	}
+
+	lastCourseGroupsArray = groups;
 	return groups;
 }
 
@@ -124,8 +165,19 @@ export function getCompletedTasks(): TaskRecord[] {
 		.sort(sortTasksCompleted);
 }
 
+let lastTodoTasks: TaskRecord[] = [];
+let lastTodoCalId: string | undefined = undefined;
+let lastTodoReturnObj: {
+	calendar?: CalendarRecord;
+	tasks: TaskRecord[];
+	upcomingTasks: TaskRecord[];
+	completedTasks: TaskRecord[];
+	pendingCount: number;
+} | null = null;
+
 /**
  * Derives tasks that belong to the user's personal To Do calendar.
+ * Caches return reference if tasks belonging to To Do haven't changed.
  */
 export function getTodoTasks(): {
 	calendar?: CalendarRecord;
@@ -148,14 +200,26 @@ export function getTodoTasks(): {
 		.filter((t) => parseTaskCalendarId(t) === todoCal.id)
 		.sort(sortTasksChronological);
 
+	if (
+		lastTodoReturnObj &&
+		lastTodoCalId === todoCal.id &&
+		areTaskArraysEqual(tasks, lastTodoTasks)
+	) {
+		return lastTodoReturnObj;
+	}
+
 	const upcomingTasks = tasks.filter((t) => t.status !== "done");
 	const completedTasks = tasks.filter((t) => t.status === "done").sort(sortTasksCompleted);
 
-	return {
+	lastTodoTasks = tasks;
+	lastTodoCalId = todoCal.id;
+	lastTodoReturnObj = {
 		calendar: todoCal,
 		tasks,
 		upcomingTasks,
 		completedTasks,
 		pendingCount: upcomingTasks.length,
 	};
+
+	return lastTodoReturnObj;
 }

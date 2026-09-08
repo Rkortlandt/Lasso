@@ -354,7 +354,7 @@ class DataState {
 		// 2. Instant local UI update with temp ID
 		const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 		this.creationFingerprints.set(fingerprint, tempId);
-		const optimisticRecord = { ...recordData, id: tempId } as T;
+		const optimisticRecord = { ...recordData, id: tempId, _clientId: tempId } as unknown as T;
 
 		this.pendingCreations.set(tempId, {
 			isCancelled: false,
@@ -366,6 +366,7 @@ class DataState {
 
 		try {
 			const createdRecord = await pb.collection(collectionName).create<T>(recordData);
+			(createdRecord as any)._clientId = tempId;
 			const pendingState = this.pendingCreations.get(tempId);
 			this.pendingCreations.delete(tempId);
 
@@ -470,12 +471,27 @@ class DataState {
 				// Advance baseline to the last successfully confirmed server record
 				activeWorker.baselineRecord = updatedRecord;
 
-				// ALWAYS fetch freshest array via getter closure after each await
-				const freshList = [...getList()];
-				const latestIndex = freshList.findIndex((item) => item.id === id);
+				// Only trigger a reactive array update if the server returned different domain values
+				const currentList = getList();
+				const latestIndex = currentList.findIndex((item) => item.id === id);
 				if (latestIndex !== -1) {
-					freshList[latestIndex] = updatedRecord;
-					setList(freshList);
+					const currentItem = currentList[latestIndex];
+					const patchKeys = Object.keys(patchToSend);
+					const hasDiff = patchKeys.some(
+						(k) => (currentItem as any)[k] !== (updatedRecord as any)[k],
+					);
+
+					if (hasDiff) {
+						const freshList = [...currentList];
+						freshList[latestIndex] = updatedRecord;
+						setList(freshList);
+					} else {
+						// Quietly update server timestamps without replacing array reference
+						Object.assign(currentItem, {
+							updated: (updatedRecord as any).updated,
+							created: (updatedRecord as any).created,
+						});
+					}
 				}
 
 				// Check if newer user actions were buffered while waiting for the server

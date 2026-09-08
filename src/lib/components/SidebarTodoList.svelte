@@ -9,6 +9,7 @@
 	import { ensureTodoCalendar, resolveCalendarColor } from "$lib/dataState/calendarQueries.svelte";
 	import SidebarTaskItem from "$lib/components/SidebarTaskItem.svelte";
 	import type { CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
+	import { slide } from "svelte/transition";
 
 	let newTaskName = $state("");
 	let isAdding = $state(false);
@@ -88,12 +89,14 @@
 	<!-- Upcoming Tasks -->
 	{#if upcomingTasks.length > 0}
 		<div class="space-y-0.5 pt-0.5">
-			{#each upcomingTasks as task (task.id)}
-				<SidebarTaskItem
-					{task}
-					calendar={todoData.calendar || defaultCalendar}
-					onDelete={handleDeleteTask}
-				/>
+			{#each upcomingTasks as task (task._clientId || task.id)}
+				<div out:slide={{ duration: 220 }}>
+					<SidebarTaskItem
+						{task}
+						calendar={defaultCalendar}
+						onDelete={handleDeleteTask}
+					/>
+				</div>
 			{/each}
 		</div>
 	{/if}
@@ -115,14 +118,16 @@
 			</button>
 
 			{#if isCompletedExpanded}
-				<div class="space-y-0.5">
-					{#each completedTasks as task (task.id)}
-						<SidebarTaskItem
-							{task}
-							calendar={todoData.calendar || defaultCalendar}
-							completed={true}
-							onDelete={handleDeleteTask}
-						/>
+				<div class="space-y-0.5" transition:slide={{ duration: 200 }}>
+					{#each completedTasks as task (task._clientId || task.id)}
+						<div transition:slide={{ duration: 200 }}>
+							<SidebarTaskItem
+								{task}
+								calendar={defaultCalendar}
+								completed={true}
+								onDelete={handleDeleteTask}
+							/>
+						</div>
 					{/each}
 				</div>
 			{/if}

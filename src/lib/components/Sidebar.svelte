@@ -32,7 +32,7 @@
 	const TODO_STORAGE_KEY = "lasso_sidebar_todo_open";
 	const TASKS_STORAGE_KEY = "lasso_sidebar_tasks_open";
 	const GOOGLE_CALENDARS_STORAGE_KEY = "lasso_sidebar_google_calendars_open";
-	const STORAGE_COLLAPSED_KEY = "lasso_sidebar_collapsed_calendars";
+	const OPEN_COURSES_STORAGE_KEY = "lasso_sidebar_open_courses";
 
 	import { dataState } from "$lib/dataState/dataState.svelte";
 	import {
@@ -84,8 +84,8 @@
 		new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
 	);
 
-	let collapsedCalendars = $state<Record<string, boolean>>(
-		loadCollapsedCalendars(),
+	let openCourses = $state<Record<string, boolean>>(
+		loadOpenCourses(),
 	);
 	let expandedCompleted = $state<Record<string, boolean>>({});
 	let expandedUpcoming = $state<Record<string, boolean>>({});
@@ -215,14 +215,14 @@
 	}
 
 	function toggleCalendarCollapse(calId: string) {
-		collapsedCalendars = {
-			...collapsedCalendars,
-			[calId]: !collapsedCalendars[calId],
+		openCourses = {
+			...openCourses,
+			[calId]: !openCourses[calId],
 		};
 		try {
 			localStorage.setItem(
-				STORAGE_COLLAPSED_KEY,
-				JSON.stringify(collapsedCalendars),
+				OPEN_COURSES_STORAGE_KEY,
+				JSON.stringify(openCourses),
 			);
 		} catch (e) {}
 	}
@@ -239,10 +239,11 @@
 		isScrolled = e.currentTarget.scrollTop > 2;
 	}
 
-	function loadCollapsedCalendars(): Record<string, boolean> {
+	function loadOpenCourses(): Record<string, boolean> {
 		if (typeof window === "undefined") return {};
 		try {
-			const saved = localStorage.getItem(STORAGE_COLLAPSED_KEY);
+			localStorage.removeItem("lasso_sidebar_collapsed_calendars");
+			const saved = localStorage.getItem(OPEN_COURSES_STORAGE_KEY);
 			return saved ? JSON.parse(saved) : {};
 		} catch {
 			return {};
@@ -563,6 +564,7 @@
 										class="w-full min-w-0 flex items-center justify-between px-2.5 py-1 rounded-md text-xs font-medium text-sidebar-foreground border bg-transparent hover:bg-sidebar-accent/40 transition-colors cursor-pointer group select-none shadow-xs"
 										style="border-color: {group.calendar.color || '#3b82f6'};"
 										onclick={() => toggleCalendarCollapse(group.calendar.id)}
+										aria-expanded={Boolean(openCourses[group.calendar.id])}
 									>
 										<div class="flex items-center gap-1.5 min-w-0">
 											<span
@@ -582,11 +584,11 @@
 												class="size-5 flex items-center justify-center shrink-0"
 											>
 												<ChevronDown
-													class="size-3.5 transition-transform duration-150 {collapsedCalendars[
+													class="size-3.5 transition-transform duration-150 {openCourses[
 														group.calendar.id
 													]
-														? '-rotate-90'
-														: ''}"
+														? ''
+														: '-rotate-90'}"
 												/>
 											</span>
 										</div>
@@ -660,7 +662,7 @@
 								</div>
 
 								<!-- Tasks under this calendar -->
-								{#if !collapsedCalendars[group.calendar.id]}
+								{#if openCourses[group.calendar.id]}
 									{@const visibleUpcoming = expandedUpcoming[group.calendar.id]
 										? group.upcomingTasks
 										: group.upcomingTasks.slice(0, 7)}
@@ -682,11 +684,13 @@
 										{:else}
 											<!-- Upcoming assignments -->
 											{#if group.upcomingTasks.length > 0}
-												{#each visibleUpcoming as task (task.id)}
-													<SidebarTaskItem
-														{task}
-														calendar={group.calendar}
-													/>
+												{#each visibleUpcoming as task (task._clientId || task.id)}
+													<div out:slide={{ duration: 220 }}>
+														<SidebarTaskItem
+															{task}
+															calendar={group.calendar}
+														/>
+													</div>
 												{/each}
 
 												{#if group.upcomingTasks.length > 7}
@@ -717,12 +721,14 @@
 													<div class="h-px flex-1 bg-sidebar-border/40"></div>
 												</div>
 
-												{#each visibleCompleted as task (task.id)}
-													<SidebarTaskItem
-														{task}
-														calendar={group.calendar}
-														completed={true}
-													/>
+												{#each visibleCompleted as task (task._clientId || task.id)}
+													<div transition:slide={{ duration: 200 }}>
+														<SidebarTaskItem
+															{task}
+															calendar={group.calendar}
+															completed={true}
+														/>
+													</div>
 												{/each}
 
 												{#if group.completedTasks.length > 3}

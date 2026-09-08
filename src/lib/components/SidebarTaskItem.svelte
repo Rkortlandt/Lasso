@@ -86,6 +86,8 @@
 		dragState.clear();
 	}
 
+	let isChecking = $state(false);
+
 	async function setTaskState() {
 		const calId = parseTaskCalendarId(task);
 		const cal = calId ? dataState.calendars.find((c) => c.id === calId) : null;
@@ -96,11 +98,19 @@
 			return; // Canvas task state is managed by Canvas
 		}
 
+		if (isChecking) return;
+
+		if (!completed && task.status !== "done") {
+			isChecking = true;
+			await new Promise((resolve) => setTimeout(resolve, 440));
+		}
+
 		const nextStatus = task.status === "done" ? "todo" : "done";
 		try {
 			await dataState.updateTask(task.id, { status: nextStatus });
 		} catch (err) {
 			console.error("Failed to update task:", err);
+			isChecking = false;
 		}
 	}
 
@@ -248,16 +258,34 @@
 			<!-- Checkbox toggle button for manual tasks -->
 			<button
 				type="button"
-				class="mt-0.5 size-3.5 rounded border flex items-center justify-center shrink-0 transition-colors cursor-pointer {completed
-					? 'bg-primary border-primary text-primary-foreground'
-					: 'border-muted-foreground/40 hover:border-primary'}"
+				class="mt-0.5 size-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-200 cursor-pointer {isChecking || completed
+					? 'bg-neutral-200/90 border-neutral-300 dark:bg-neutral-800 dark:border-neutral-700/80 text-emerald-600 dark:text-emerald-400 shadow-xs'
+					: 'border-muted-foreground/40 hover:border-emerald-500/70 hover:bg-emerald-500/10'} {isChecking
+					? 'task-box-anim'
+					: ''}"
 				onclick={(e) => {
 					e.stopPropagation();
 					setTaskState();
 				}}
 				aria-label={completed ? "Mark as incomplete" : "Mark as completed"}
+				disabled={isChecking}
 			>
-				{#if completed}
+				{#if isChecking}
+					<svg
+						class="size-2.5"
+						viewBox="0 0 12 12"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2.4"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					>
+						<path
+							d="M2.5 6.3L4.8 8.6L9.5 3.4"
+							class="task-check-path"
+						/>
+					</svg>
+				{:else if completed}
 					<CheckIcon class="size-2.5 stroke-[3]" />
 				{/if}
 			</button>
@@ -266,12 +294,23 @@
 			<div class="flex-1 min-w-0">
 				<div class="flex items-center justify-between gap-1.5 min-w-0">
 					<p
-						class="text-[11px] leading-snug truncate transition-colors flex-1 min-w-0 {completed
-							? 'line-through text-muted-foreground opacity-60'
-							: 'text-sidebar-foreground'}"
+						class="text-[11px] leading-snug truncate flex-1 min-w-0"
 						title={task.name}
 					>
-						{task.name}
+						<span class="relative inline-block max-w-full truncate align-bottom">
+							<span
+								class="truncate transition-colors duration-200 {isChecking || completed
+									? 'text-muted-foreground opacity-60'
+									: 'text-sidebar-foreground'} {completed && !isChecking
+									? 'line-through'
+									: ''}"
+							>
+								{task.name}
+							</span>
+							{#if isChecking}
+								<span class="strike-through-line"></span>
+							{/if}
+						</span>
 					</p>
 					{#if completed && task.grade}
 						<span
@@ -299,8 +338,8 @@
 
 				{#if formattedDue}
 					<span
-						class="text-[9px] text-muted-foreground/75 block {completed
-							? 'font-mono'
+						class="text-[9px] text-muted-foreground/75 block transition-opacity duration-200 {isChecking || completed
+							? 'font-mono opacity-50'
 							: ''}"
 					>
 						{formattedDue}
@@ -310,3 +349,58 @@
 		</div>
 	{/if}
 </div>
+
+<style>
+	.task-box-anim {
+		animation: box-pop 250ms cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+	}
+
+	@keyframes box-pop {
+		0% {
+			transform: scale(0.9);
+		}
+		50% {
+			transform: scale(1.18);
+		}
+		100% {
+			transform: scale(1);
+		}
+	}
+
+	.task-check-path {
+		stroke-dasharray: 14;
+		stroke-dashoffset: 14;
+		animation: draw-checkmark 200ms cubic-bezier(0.65, 0, 0.45, 1) 40ms forwards;
+	}
+
+	@keyframes draw-checkmark {
+		0% {
+			stroke-dashoffset: 14;
+		}
+		100% {
+			stroke-dashoffset: 0;
+		}
+	}
+
+	.strike-through-line {
+		position: absolute;
+		left: 0;
+		top: 50%;
+		height: 1.2px;
+		background-color: currentColor;
+		color: var(--color-muted-foreground, #888);
+		opacity: 0.7;
+		border-radius: 9999px;
+		pointer-events: none;
+		animation: strike-anim 240ms cubic-bezier(0.4, 0, 0.2, 1) 70ms forwards;
+	}
+
+	@keyframes strike-anim {
+		0% {
+			width: 0%;
+		}
+		100% {
+			width: 100%;
+		}
+	}
+</style>
