@@ -192,7 +192,7 @@
 		bind:this={scrollContainer}
 		class="h-full w-full overflow-y-auto overflow-x-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 	>
-		<div class="flex gap-3 px-4 w-full h-[140%] min-h-[750px] pt-0 pb-0">
+		<div class="flex gap-2 px-2 w-full h-[140%] min-h-[750px] pt-0 pb-0">
 			<!-- Part 1: Left time column (1 col, 25 rows) -->
 			<div class="w-10 shrink-0 flex flex-col h-full select-none">
 				{#each hours as hour, index}

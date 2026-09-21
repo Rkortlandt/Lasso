@@ -7,7 +7,7 @@
 	import { dataState } from "$lib/dataState/dataState.svelte";
 	import { getTodoTasks } from "$lib/dataState/taskQueries.svelte";
 	import { ensureTodoCalendar, resolveCalendarColor } from "$lib/dataState/calendarQueries.svelte";
-	import SidebarTaskItem from "$lib/components/SidebarTaskItem.svelte";
+	import SidebarTaskItem from "./SidebarTaskItem.svelte";
 	import type { CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
 	import { slide } from "svelte/transition";
 

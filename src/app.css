@@ -436,12 +436,21 @@ code {
 .sidebar-scrollbar {
 	overflow-y: auto;
 	scrollbar-gutter: stable;
-	scrollbar-width: thin;
-	scrollbar-color: color-mix(in srgb, var(--sidebar-foreground) 25%, transparent) transparent;
+	overflow-x: hidden;
+}
+
+@supports (-moz-appearance: none) {
+	.sidebar-scrollbar {
+		scrollbar-width: thin;
+		scrollbar-color: transparent transparent;
+	}
+	.sidebar-scrollbar.sidebar-scrollbar-active {
+		scrollbar-color: color-mix(in srgb, var(--sidebar-foreground) 20%, transparent) transparent;
+	}
 }
 
 .sidebar-scrollbar::-webkit-scrollbar {
-	width: 6px;
+	width: 4px;
 	background: transparent;
 }
 
@@ -450,11 +459,49 @@ code {
 }
 
 .sidebar-scrollbar::-webkit-scrollbar-thumb {
-	background-color: color-mix(in srgb, var(--sidebar-foreground) 25%, transparent);
+	background-color: transparent;
 	border-radius: 9999px;
 }
 
-.sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
-	background-color: color-mix(in srgb, var(--sidebar-foreground) 50%, transparent);
+.sidebar-scrollbar.sidebar-scrollbar-active::-webkit-scrollbar-thumb {
+	background-color: color-mix(in srgb, var(--sidebar-foreground) 20%, transparent);
+}
+
+.sidebar-scrollbar.sidebar-scrollbar-active::-webkit-scrollbar-thumb:hover {
+	background-color: color-mix(in srgb, var(--sidebar-foreground) 45%, transparent);
+}
+
+/* Ultra-low profile scrollbar for collapsed bar */
+.sidebar-scrollbar-collapsed {
+	overflow-y: auto;
+	scrollbar-gutter: stable;
+	overflow-x: hidden;
+}
+
+@supports (-moz-appearance: none) {
+	.sidebar-scrollbar-collapsed {
+		scrollbar-width: thin;
+		scrollbar-color: transparent transparent;
+	}
+	.sidebar-scrollbar-collapsed.sidebar-scrollbar-active {
+		scrollbar-color: color-mix(in srgb, var(--sidebar-foreground) 18%, transparent) transparent;
+	}
+}
+
+.sidebar-scrollbar-collapsed::-webkit-scrollbar {
+	width: 4px;
+}
+
+.sidebar-scrollbar-collapsed::-webkit-scrollbar-thumb {
+	background-color: transparent;
+	border-radius: 9999px;
+}
+
+.sidebar-scrollbar-collapsed.sidebar-scrollbar-active::-webkit-scrollbar-thumb {
+	background-color: color-mix(in srgb, var(--sidebar-foreground) 18%, transparent);
+}
+
+.sidebar-scrollbar-collapsed.sidebar-scrollbar-active::-webkit-scrollbar-thumb:hover {
+	background-color: color-mix(in srgb, var(--sidebar-foreground) 40%, transparent);
 }
 

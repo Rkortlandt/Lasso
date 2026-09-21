@@ -82,7 +82,7 @@ const deadlinesByDate = $derived.by(() => {
 		const effectiveCalId = calId || "unassigned";
 		const cal = calId ? calendarMap.get(calId) : null;
 		const calName = cal?.name || t.expand?.calendar?.name || "Other Tasks";
-		if (calendarVisibilityState.isHiddenFromGrid(effectiveCalId, cal?.calendar_id || calName)) {
+		if (calendarVisibilityState.isHiddenFromGrid(effectiveCalId, calName)) {
 			continue;
 		}
 
@@ -104,7 +104,7 @@ const deadlinesByDate = $derived.by(() => {
 		let calId = e.calendar || e.expand?.calendar?.id || "";
 		const cal = calId ? calendarMap.get(calId) : null;
 		const calName = cal?.name || e.expand?.calendar?.name || "Other Tasks";
-		if (calendarVisibilityState.isHiddenFromGrid(calId || "unassigned", cal?.calendar_id || calName)) {
+		if (calendarVisibilityState.isHiddenFromGrid(calId || "unassigned", calName)) {
 			continue;
 		}
 
@@ -319,7 +319,7 @@ const announcementsByDate = $derived.by(() => {
 		let calId = e.calendar || e.expand?.calendar?.id || "";
 		const cal = calId ? calendarMap.get(calId) : null;
 		const calName = cal?.name || e.expand?.calendar?.name || "Coursework";
-		if (calendarVisibilityState.isHiddenFromGrid(calId || "unassigned", cal?.calendar_id || calName)) {
+		if (calendarVisibilityState.isHiddenFromGrid(calId || "unassigned", calName)) {
 			continue;
 		}
 
@@ -466,7 +466,7 @@ const allDayEventsByDate = $derived.by(() => {
 		if (e.calendar) {
 			const cal = calendarMap.get(e.calendar);
 			calColor = resolveCalendarColor(cal || e.expand?.calendar);
-			if (calendarVisibilityState.isHiddenFromGrid(e.calendar, cal?.calendar_id || cal?.name)) {
+			if (calendarVisibilityState.isHiddenFromGrid(e.calendar, cal?.name)) {
 				continue;
 			}
 		}
@@ -538,13 +538,11 @@ const timedEventsByDate = $derived.by(() => {
 		let calId = pe.calendar || pe.expand?.calendar?.id || "";
 		const cal = calId ? calendarMap.get(calId) : undefined;
 		const calName =
-			cal?.nickname ||
 			cal?.name ||
-			pe.expand?.calendar?.nickname ||
 			pe.expand?.calendar?.name ||
 			"Coursework";
 
-		if (calId && calendarVisibilityState.isHiddenFromGrid(calId, cal?.calendar_id || calName)) {
+		if (calId && calendarVisibilityState.isHiddenFromGrid(calId, calName)) {
 			continue;
 		}
 

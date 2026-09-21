@@ -81,72 +81,74 @@ class CalendarVisibilityState {
 	}
 
 	// Sidebar visibility controls (configured in Settings)
-	isHiddenInSidebar(calId: string, secondaryKey?: string): boolean {
-		if (!calId && !secondaryKey) return false;
+	isHiddenInSidebar(calId: string, calName?: string): boolean {
+		if (!calId && !calName) return false;
 		if (calId && this.hiddenInSidebarSet.has(calId)) return true;
-		if (secondaryKey && this.hiddenInSidebarSet.has(secondaryKey)) return true;
+		if (calName && this.hiddenInSidebarSet.has(calName)) return true;
 		return false;
 	}
 
-	isShownInSidebar(calId: string, secondaryKey?: string): boolean {
-		return !this.isHiddenInSidebar(calId, secondaryKey);
+	isShownInSidebar(calId: string, calName?: string): boolean {
+		return !this.isHiddenInSidebar(calId, calName);
 	}
 
-	setSidebarVisibility(calId: string, visible: boolean, secondaryKey?: string) {
-		if (!calId && !secondaryKey) return;
+	setSidebarVisibility(calId: string, visible: boolean, calName?: string) {
+		if (!calId && !calName) return;
 		const next = new Set(this.hiddenInSidebarSet);
 		if (visible) {
 			if (calId) next.delete(calId);
-			if (secondaryKey) next.delete(secondaryKey);
+			if (calName) next.delete(calName);
 		} else {
 			if (calId) next.add(calId);
-			if (secondaryKey) next.add(secondaryKey);
+			if (calName) next.add(calName);
 		}
 		this.hiddenInSidebarSet = next;
 		this.saveSidebarToStorage();
 	}
 
-	toggleSidebarVisibility(calId: string, secondaryKey?: string) {
+	toggleSidebarVisibility(calId: string, calName?: string) {
 		this.setSidebarVisibility(
 			calId,
-			this.isHiddenInSidebar(calId, secondaryKey),
-			secondaryKey,
+			this.isHiddenInSidebar(calId, calName),
+			calName,
 		);
 	}
 
 	// Main Calendar grid visibility controls (configured in Sidebar)
-	isHiddenOnCalendar(calId: string, secondaryKey?: string): boolean {
-		if (!calId && !secondaryKey) return false;
+	isHiddenOnCalendar(calId: string, calName?: string): boolean {
+		if (!calId && !calName) return false;
 		if (calId && this.hiddenOnCalendarSet.has(calId)) return true;
-		if (secondaryKey && this.hiddenOnCalendarSet.has(secondaryKey)) return true;
+		if (calName && this.hiddenOnCalendarSet.has(calName)) return true;
 		return false;
 	}
 
-	isShownOnCalendar(calId: string, secondaryKey?: string): boolean {
-		return !this.isHiddenOnCalendar(calId, secondaryKey);
+	isShownOnCalendar(calId: string, calName?: string): boolean {
+		return !this.isHiddenOnCalendar(calId, calName);
 	}
 
-	setCalendarVisibility(calId: string, visible: boolean) {
-		if (!calId) return;
+	setCalendarVisibility(calId: string, visible: boolean, calName?: string) {
+		if (!calId && !calName) return;
 		const next = new Set(this.hiddenOnCalendarSet);
 		if (visible) {
-			next.delete(calId);
+			if (calId) next.delete(calId);
+			if (calName) next.delete(calName);
 		} else {
-			next.add(calId);
+			if (calId) next.add(calId);
+			if (calName) next.add(calName);
 		}
 		this.hiddenOnCalendarSet = next;
 		this.saveCalendarToStorage();
 	}
 
-	toggleCalendarVisibility(calId: string) {
-		this.setCalendarVisibility(calId, this.isHiddenOnCalendar(calId));
+	toggleCalendarVisibility(calId: string, calName?: string) {
+		this.setCalendarVisibility(calId, this.isHiddenOnCalendar(calId, calName), calName);
 	}
 
 	// Isolate controls (configured in Sidebar via eyedropper)
-	isIsolated(calId: string, secondaryKey?: string): boolean {
+	isIsolated(calId: string, calName?: string): boolean {
 		if (!this.isolated) return false;
 		if (calId && this.isolated === calId) return true;
-		if (secondaryKey && this.isolated === secondaryKey) return true;
+		if (calName && this.isolated === calName) return true;
 		return false;
 	}
 
@@ -155,8 +157,8 @@ class CalendarVisibilityState {
 		this.saveIsolatedToStorage();
 	}
 
-	toggleIsolate(calId: string) {
-		if (this.isolated === calId) {
+	toggleIsolate(calId: string, calName?: string) {
+		if (this.isolated === calId || (calName && this.isolated === calName)) {
 			this.setIsolated(null);
 		} else {
 			this.setIsolated(calId);
@@ -165,21 +167,21 @@ class CalendarVisibilityState {
 
 	// Full Grid Visibility: A calendar appears on the grid ONLY if it is neither hidden from sidebar nor hidden from calendar.
 	// If a calendar is isolated, it takes precedence over hidden states and ONLY the isolated calendar is shown.
-	isHiddenFromGrid(calId: string, secondaryKey?: string): boolean {
+	isHiddenFromGrid(calId: string, calName?: string): boolean {
 		if (this.isolated !== null) {
 			const isThisIsolated =
 				(calId && this.isolated === calId) ||
-				(secondaryKey && this.isolated === secondaryKey);
+				(calName && this.isolated === calName);
 			return !isThisIsolated;
 		}
 
-		if (this.isHiddenInSidebar(calId, secondaryKey)) return true;
-		if (this.isHiddenOnCalendar(calId, secondaryKey)) return true;
+		if (this.isHiddenInSidebar(calId, calName)) return true;
+		if (this.isHiddenOnCalendar(calId, calName)) return true;
 		return false;
 	}
 
-	isShownOnGrid(calId: string, secondaryKey?: string): boolean {
-		return !this.isHiddenFromGrid(calId, secondaryKey);
+	isShownOnGrid(calId: string, calName?: string): boolean {
+		return !this.isHiddenFromGrid(calId, calName);
 	}
 }
 

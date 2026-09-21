@@ -1,5 +1,5 @@
 <script lang="ts">
-	import Sidebar from '$lib/components/Sidebar.svelte';
+	import Sidebar from '$lib/components/Sidebar/Sidebar.svelte';
 	import { pageState } from '$lib/pageSystem.svelte';
 	import { authState } from '$lib/authState.svelte';
 	import HeroPage from '$lib/pages/HeroPage.svelte';

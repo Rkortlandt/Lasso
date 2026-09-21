@@ -4,6 +4,7 @@
 	import Button from "$lib/components/ui/button/button.svelte";
 	import { dayState } from "$lib/dayState.svelte";
 	import type { DayItem } from "./calendarTypes";
+	import CalendarDropOverlay from "./CalendarDropOverlay.svelte";
 
 	interface Props {
 		days: DayItem[];
@@ -24,7 +25,7 @@
 	}: Props = $props();
 </script>
 
-<header class="flex h-14 items-center gap-3 px-4 shrink-0 z-10">
+<header class="flex h-14 items-center gap-2 px-2 shrink-0 z-10">
 	<div class="w-10 shrink-0 flex items-center justify-center">
 		<Button
 			variant="ghost"
@@ -38,6 +39,8 @@
 	</div>
 
 	<div class="flex-1 h-full overflow-hidden relative">
+		<CalendarDropOverlay {visibleCount} />
+
 		<div
 			class="h-full flex flex-row items-center"
 			style="width: calc({totalCount} / {visibleCount} * 100%); transform: translate3d(-{transformPercent}%, 0, 0); {isAnimating

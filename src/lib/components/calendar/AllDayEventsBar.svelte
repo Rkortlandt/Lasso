@@ -30,7 +30,7 @@
 </script>
 
 <div
-	class="absolute top-14 left-0 right-0 z-30 flex gap-3 px-4 -translate-y-1/4 pointer-events-none"
+	class="absolute top-14 left-0 right-0 z-30 flex gap-2 px-2 -translate-y-1/4 pointer-events-none"
 >
 	<!-- Left: All-day label aligned with time column -->
 	<div class="w-10 shrink-0 flex items-center justify-end pr-1 select-none">
@@ -91,7 +91,7 @@
 		<Button
 			variant="outline"
 			size="icon"
-			class="size-8 rounded-lg border border-border bg-background hover:bg-muted text-foreground cursor-pointer shadow-sm transition-all"
+			class="size-8 rounded-lg border border-border bg-background hover:bg-primary/10 hover:border-primary/50 text-foreground hover:text-primary cursor-pointer shadow-xs transition-all"
 			onclick={onSync}
 			disabled={isSyncing}
 			title={isSyncing
