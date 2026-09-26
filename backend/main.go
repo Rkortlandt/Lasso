@@ -55,11 +55,11 @@ type CanvasUser struct {
 }
 
 type CanvasVerifyResponse struct {
-	Success     bool             `json:"success"`
-	StudentName string           `json:"studentName"`
-	StudentID   int              `json:"studentId"`
-	AvatarURL   string           `json:"avatarUrl"`
-	CourseCount int              `json:"courseCount"`
+	Success     bool           `json:"success"`
+	StudentName string         `json:"studentName"`
+	StudentID   int            `json:"studentId"`
+	AvatarURL   string         `json:"avatarUrl"`
+	CourseCount int            `json:"courseCount"`
 	Courses     []CanvasCourse `json:"courses"`
 }
 
@@ -870,4 +870,3 @@ func handleEnsureTodoCalendar(app core.App) func(e *core.RequestEvent) error {
 		})
 	}
 }
-

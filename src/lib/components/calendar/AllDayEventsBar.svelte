@@ -1,6 +1,7 @@
 <script lang="ts">
 	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
 	import Button from "$lib/components/ui/button/button.svelte";
+	import CalendarAllDayItem from "./CalendarAllDayItem.svelte";
 	import type { DateValue } from "@internationalized/date";
 	import type { DayAllDayEvent, DayItem } from "./calendarTypes";
 
@@ -58,26 +59,11 @@
 					class="h-full border-r border-border/30 last:border-r-0 flex flex-col overflow-y-auto overflow-x-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 				>
 					{#each dayEvents as evt (evt.id)}
-						<div class="h-1/2 w-full shrink-0 px-1 py-[1px] box-border">
-							<button
-								type="button"
-								class="h-full w-full rounded-full px-2 flex items-center justify-start gap-1 truncate text-[9px] font-medium border select-none cursor-pointer transition-all shadow-2xs"
-								style="
-									background-color: {evt.color || '#3b82f6'};
-									border-color: {evt.color || '#3b82f6'};
-								"
-								title={evt.title}
-								onclick={(e) => {
-									e.stopPropagation();
-									onSelectEvent?.(evt.title, index);
-								}}
-							>
-								<span
-									class="truncate leading-none text-white drop-shadow-xs"
-									style="font-weight: 600;">{evt.title}</span
-								>
-							</button>
-						</div>
+						<CalendarAllDayItem
+							event={evt}
+							colIndex={index}
+							onSelect={onSelectEvent}
+						/>
 					{/each}
 				</div>
 			{/each}
