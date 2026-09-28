@@ -1,6 +1,7 @@
 package main
 
 import (
+	"backend/google"
 	"net/http"
 	"sync"
 	"testing"
@@ -20,7 +21,7 @@ func TestExtractCourseTag(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		res := extractCourseTag(tc.courseName, tc.nickname)
+		res := google.ExtractCourseTag(tc.courseName, tc.nickname)
 		if res != tc.expected {
 			t.Errorf("for (%s, %s) expected %s, got %s", tc.courseName, tc.nickname, tc.expected, res)
 		}
@@ -28,25 +29,25 @@ func TestExtractCourseTag(t *testing.T) {
 }
 
 func TestParseDateString(t *testing.T) {
-	_, isDateOnly, err := parseDateString("2026-09-01")
+	_, isDateOnly, err := google.ParseDateString("2026-09-01")
 	if err != nil || !isDateOnly {
 		t.Errorf("expected date-only parse for 2026-09-01")
 	}
 
-	_, isDateOnly2, err := parseDateString("2026-09-01T14:30:00Z")
+	_, isDateOnly2, err := google.ParseDateString("2026-09-01T14:30:00Z")
 	if err != nil || isDateOnly2 {
 		t.Errorf("expected datetime parse for 2026-09-01T14:30:00Z")
 	}
 }
 
 func TestGoogleSharedHTTPClient(t *testing.T) {
-	if googleSharedHTTPClient == nil {
-		t.Fatal("expected googleSharedHTTPClient to be initialized")
+	if google.GoogleSharedHTTPClient == nil {
+		t.Fatal("expected GoogleSharedHTTPClient to be initialized")
 	}
 
-	tr, ok := googleSharedHTTPClient.Transport.(*http.Transport)
+	tr, ok := google.GoogleSharedHTTPClient.Transport.(*http.Transport)
 	if !ok {
-		t.Fatal("expected googleSharedHTTPClient.Transport to be *http.Transport")
+		t.Fatal("expected GoogleSharedHTTPClient.Transport to be *http.Transport")
 	}
 
 	if !tr.ForceAttemptHTTP2 {
@@ -132,7 +133,7 @@ func TestDatesEqual(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		actual := datesEqual(tc.d1, tc.d2)
+		actual := google.DatesEqual(tc.d1, tc.d2)
 		if actual != tc.expected {
 			t.Errorf("datesEqual(%q, %q) = %v, expected %v", tc.d1, tc.d2, actual, tc.expected)
 		}

@@ -197,7 +197,7 @@ export function getTodoTasks(): {
 	}
 
 	const tasks = dataState.tasks
-		.filter((t) => parseTaskCalendarId(t) === todoCal.id)
+		.filter((t) => t.source === "todo" || parseTaskCalendarId(t) === todoCal.id)
 		.sort(sortTasksChronological);
 
 	if (

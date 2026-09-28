@@ -9,6 +9,7 @@ import type {
 	FormattedTimedEvent,
 } from "$lib/components/calendar/calendarTypes";
 import type { EventRecord, TaskRecord } from "$lib/dataState/dataRecordInterfaces";
+import { expandRecurringEvents } from "$lib/calendar/rruleExpansion";
 
 export function getTaskLocalDate(
 	dateStr: string,
@@ -42,11 +43,26 @@ export const ISOIsolateEnd = (e: EventRecord | { end?: string }) =>
 	e.end ? (e.end.includes(" ") ? e.end.replace(" ", "T") : e.end) : "";
 
 /**
+ * Derived collection of all events with RFC 5545 RRULE recurring events expanded
+ * over the active window (-4 months to +6 months), factoring in exdate and child exceptions.
+ */
+const activeExpandedEvents = $derived.by(() => {
+	const now = new Date();
+	const windowStart = new Date(now.getFullYear(), now.getMonth() - 4, 1);
+	const windowEnd = new Date(now.getFullYear(), now.getMonth() + 6, 1);
+	return expandRecurringEvents(dataState.events, windowStart, windowEnd);
+});
+
+export function getActiveExpandedEvents(): EventRecord[] {
+	return activeExpandedEvents;
+}
+
+/**
  * Pre-indexes announcement titles for fast O(1) membership checks.
  */
 const announcementTitlesSet = $derived.by(() => {
 	const set = new Set<string>();
-	for (const e of dataState.events) {
+	for (const e of activeExpandedEvents) {
 		if (e.announcement && e.title) {
 			set.add(e.title.toLowerCase().trim());
 		}
@@ -98,7 +114,7 @@ const deadlinesByDate = $derived.by(() => {
 	}
 
 	const eventsGrouped = new Map<string, EventRecord[]>();
-	for (const e of dataState.events) {
+	for (const e of activeExpandedEvents) {
 		if (!e.deadline || e.announcement || !e.start) continue;
 
 		let calId = e.calendar || e.expand?.calendar?.id || "";
@@ -126,9 +142,23 @@ const deadlinesByDate = $derived.by(() => {
 		const dayDeadlineEvents = eventsGrouped.get(key) || [];
 
 		const dateHash =
-			dayTasks.map((t) => `${t.id}:${t.status}:${t.name}:${t.due_date || t.fake_due_date}`).join("|") +
+			dayTasks
+				.map((t) => {
+					let calId = t.expand?.calendar?.id || (typeof t.calendar === "string" ? t.calendar : "");
+					const cal = calId ? calendarMap.get(calId) : null;
+					const calColor = resolveCalendarColor(cal || t.expand?.calendar);
+					return `${t.id}:${t.status}:${t.name}:${calColor}:${t.due_date || t.fake_due_date}`;
+				})
+				.join("|") +
 			"~" +
-			dayDeadlineEvents.map((e) => `${e.id}:${e.start}:${e.title}`).join("|");
+			dayDeadlineEvents
+				.map((e) => {
+					let calId = e.calendar || e.expand?.calendar?.id || "";
+					const cal = calId ? calendarMap.get(calId) : null;
+					const calColor = resolveCalendarColor(cal || e.expand?.calendar);
+					return `${e.id}:${e.start}:${e.title}:${calColor}:${e.color}`;
+				})
+				.join("|");
 
 		const cached = cachedDeadlinesByDate.get(key);
 		if (cached && cached.hash === dateHash) {
@@ -215,7 +245,9 @@ const deadlinesByDate = $derived.by(() => {
 
 				let calId = e.calendar || e.expand?.calendar?.id || "";
 				const cal = calId ? calendarMap.get(calId) : undefined;
-				let color = e.color || resolveCalendarColor(cal || e.expand?.calendar);
+				const calColor = resolveCalendarColor(cal || e.expand?.calendar);
+				const isCustomGoogleColor = Boolean(e.google_event_id && e.event_label_id && e.color);
+				let color = isCustomGoogleColor ? e.color || calColor : calColor || e.color || "#3b82f6";
 				let courseName =
 					cal?.nickname ||
 					cal?.name ||
@@ -459,7 +491,7 @@ const allDayEventsByDate = $derived.by(() => {
 	const calendarMap = getCalendarMap();
 	const grouped = new Map<string, EventRecord[]>();
 
-	for (const e of dataState.events) {
+	for (const e of activeExpandedEvents) {
 		if (!e.start || !e.allday || e.deadline || e.announcement) continue;
 
 		let calColor: string | undefined;
@@ -482,7 +514,13 @@ const allDayEventsByDate = $derived.by(() => {
 	}
 
 	for (const [key, evts] of grouped.entries()) {
-		const hash = evts.map((e) => `${e.id}:${e.title}:${e.color}`).join("|");
+		const hash = evts
+			.map((e) => {
+				const cal = e.calendar ? calendarMap.get(e.calendar) : undefined;
+				const calColor = resolveCalendarColor(cal || e.expand?.calendar);
+				return `${e.id}:${e.title}:${calColor}:${e.color}`;
+			})
+			.join("|");
 		const cached = cachedAllDayEventsByDate.get(key);
 		if (cached && cached.hash === hash) {
 			map.set(key, cached.items);
@@ -495,10 +533,11 @@ const allDayEventsByDate = $derived.by(() => {
 			if (!items.some((item) => item.id === dedupeKey)) {
 				const cal = e.calendar ? calendarMap.get(e.calendar) : undefined;
 				const calColor = resolveCalendarColor(cal || e.expand?.calendar);
+				const isCustomGoogleColor = Boolean(e.google_event_id && e.event_label_id && e.color);
 				items.push({
 					id: dedupeKey,
 					title: e.title,
-					color: e.color || calColor || "#3b82f6",
+					color: isCustomGoogleColor ? e.color || calColor || "#3b82f6" : calColor || e.color || "#3b82f6",
 				});
 			}
 		}
@@ -532,7 +571,7 @@ const timedEventsByDate = $derived.by(() => {
 
 	const dateItemsMap = new Map<string, EventRecord[]>();
 
-	for (const pe of dataState.events) {
+	for (const pe of activeExpandedEvents) {
 		if (pe.allday || !pe.start || pe.deadline || pe.announcement) continue;
 
 		let calId = pe.calendar || pe.expand?.calendar?.id || "";
@@ -562,7 +601,10 @@ const timedEventsByDate = $derived.by(() => {
 			.map((pe) => {
 				const taskId = pe.task;
 				const linkedTask = taskId ? (taskMap.get(taskId) || pe.expand?.task) : pe.expand?.task;
-				return `${pe.id}:${pe.start}:${pe.end}:${pe.title}:${linkedTask?.status}`;
+				const calId = pe.calendar || pe.expand?.calendar?.id || "";
+				const cal = calId ? calendarMap.get(calId) : undefined;
+				const calColor = resolveCalendarColor(cal || pe.expand?.calendar);
+				return `${pe.id}:${pe.start}:${pe.end}:${pe.title}:${calColor}:${pe.color}:${linkedTask?.status}`;
 			})
 			.join("|");
 
@@ -606,7 +648,8 @@ const timedEventsByDate = $derived.by(() => {
 			const heightPercent = Math.max(2.0, Math.min(25, (durationMin / 60 / 25) * 100));
 
 			const calColor = resolveCalendarColor(cal || pe.expand?.calendar);
-			const color = pe.color || calColor;
+			const isCustomGoogleColor = Boolean(pe.google_event_id && pe.event_label_id && pe.color);
+			const color = isCustomGoogleColor ? pe.color || calColor : calColor || pe.color || "#3b82f6";
 			const timeStr = `${startD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} - ${endD.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 
 			const isTaskBlock = Boolean(pe.task || pe.expand?.task);

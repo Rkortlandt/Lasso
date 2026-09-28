@@ -3,6 +3,8 @@
 	import { fly } from "svelte/transition";
 	import { cubicOut } from "svelte/easing";
 	import { dragState } from "$lib/dragState.svelte";
+	import AlertCircle from "@lucide/svelte/icons/alert-circle";
+	import AlertTriangle from "@lucide/svelte/icons/alert-triangle";
 
 	type DropOverlayMode = "default" | "warning" | "error";
 
@@ -25,7 +27,7 @@
 
 	let {
 		show,
-		text = "Drop task onto calendar to scedule a work event",
+		text = "Drop task onto calendar to schedule a work event",
 		mode = "default",
 		visibleCount = 7,
 		middleCount = 3,
@@ -64,46 +66,48 @@
 	const currentStyle = $derived(modeStyles[mode] || modeStyles.default);
 </script>
 
-{#if isVisible}
+<div
+	class="absolute top-0 z-30 pointer-events-none select-none flex items-start justify-center {className} transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
+	style="left: {leftPercent}%; width: {widthPercent}%; transform: translate3d(0, {isVisible ? '0' : '-130%'}, 0); opacity: {isVisible ? '1' : '0'};"
+	aria-live="polite"
+>
 	<div
-		class="absolute top-0 z-30 pointer-events-none select-none flex items-start justify-center {className}"
-		style="left: {leftPercent}%; width: {widthPercent}%;"
-		transition:fly={{ y: -32, duration: 220, easing: cubicOut }}
-		aria-live="polite"
+		class="relative flex items-center justify-center gap-2 px-4 py-1.5 rounded-b-xl font-bold text-xs tracking-wide transition-colors duration-200 {currentStyle.bg}"
 	>
-		<div
-			class="relative flex items-center justify-center gap-2 px-4 py-1.5 rounded-b-xl font-bold text-xs tracking-wide transition-colors duration-200 {currentStyle.bg}"
+		<!-- Left Inverted Corner / Tab Ear -->
+		<svg
+			class="absolute top-0 right-full w-3.5 h-3.5 pointer-events-none {currentStyle.earFill}"
+			viewBox="0 0 14 14"
+			fill="none"
+			xmlns="http://www.w3.org/2000/svg"
+			aria-hidden="true"
 		>
-			<!-- Left Inverted Corner / Tab Ear -->
-			<svg
-				class="absolute top-0 right-full w-3.5 h-3.5 pointer-events-none {currentStyle.earFill}"
-				viewBox="0 0 14 14"
-				fill="none"
-				xmlns="http://www.w3.org/2000/svg"
-				aria-hidden="true"
-			>
-				<!-- Fills top-right corner curving down-left away from top edge -->
-				<path d="M 0 0 L 14 0 L 14 14 A 14 14 0 0 0 0 0 Z" fill="currentColor" />
-			</svg>
+			<!-- Fills top-right corner curving down-left away from top edge -->
+			<path d="M 0 0 L 14 0 L 14 14 A 14 14 0 0 0 0 0 Z" fill="currentColor" />
+		</svg>
 
-			<!-- Right Inverted Corner / Tab Ear -->
-			<svg
-				class="absolute top-0 left-full w-3.5 h-3.5 pointer-events-none {currentStyle.earFill}"
-				viewBox="0 0 14 14"
-				fill="none"
-				xmlns="http://www.w3.org/2000/svg"
-				aria-hidden="true"
-			>
-				<!-- Fills top-left corner curving down-right away from top edge -->
-				<path d="M 14 0 L 0 0 L 0 14 A 14 14 0 0 1 14 0 Z" fill="currentColor" />
-			</svg>
+		<!-- Right Inverted Corner / Tab Ear -->
+		<svg
+			class="absolute top-0 left-full w-3.5 h-3.5 pointer-events-none {currentStyle.earFill}"
+			viewBox="0 0 14 14"
+			fill="none"
+			xmlns="http://www.w3.org/2000/svg"
+			aria-hidden="true"
+		>
+			<!-- Fills top-left corner curving down-right away from top edge -->
+			<path d="M 14 0 L 0 0 L 0 14 A 14 14 0 0 1 14 0 Z" fill="currentColor" />
+		</svg>
 
-			<!-- Content -->
-			{#if children}
-				{@render children()}
-			{:else}
-				<span class="truncate">{text}</span>
+		<!-- Content -->
+		{#if children}
+			{@render children()}
+		{:else}
+			{#if mode === "error"}
+				<AlertCircle class="size-3.5 shrink-0" />
+			{:else if mode === "warning"}
+				<AlertTriangle class="size-3.5 shrink-0" />
 			{/if}
-		</div>
+			<span class="truncate">{text}</span>
+		{/if}
 	</div>
-{/if}
+</div>

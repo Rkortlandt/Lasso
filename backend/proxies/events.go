@@ -197,3 +197,27 @@ func (e *Event) Timezone() string {
 func (e *Event) SetTimezone(tz string) {
 	e.Set("timezone", tz)
 }
+
+func (e *Event) RecurrEventID() string {
+	return e.GetString("recurr_event_id")
+}
+
+func (e *Event) SetRecurrEventID(id string) {
+	e.Set("recurr_event_id", id)
+}
+
+func (e *Event) RecurrOgDate() string {
+	return e.GetString("recurr_og_date")
+}
+
+func (e *Event) SetRecurrOgDate(date string) {
+	e.Set("recurr_og_date", date)
+}
+
+func (e *Event) Source() string {
+	return e.GetString("source")
+}
+
+func (e *Event) SetSource(source string) {
+	e.Set("source", source)
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"backend/google"
 	"backend/proxies"
 	"encoding/json"
 	"fmt"
@@ -8,12 +9,57 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 )
+
+var (
+	canvasScreenreaderSpanRegex = regexp.MustCompile(`(?i)<(?:span|i)[^>]*class=["'][^"']*(?:screenreader-only|ui-icon-extlink|ui-icon)[^"']*["'][^>]*>[\s\S]*?</(?:span|i)>`)
+	canvasTitleSpanRegex        = regexp.MustCompile(`(?i)<(?:span|i|a)[^>]*title=["'][^"']*Links to (?:an\s+)?external site[^"']*["'][^>]*>[\s\S]*?</(?:span|i|a)>`)
+	canvasParenthesizedRegex    = regexp.MustCompile(`(?i)(?:&nbsp;|&#160;|\s)*[\(\[]\s*Links to (?:an\s+)?external site\.?\s*[\)\]]`)
+	canvasBareEndRegex          = regexp.MustCompile(`(?i)(?:&nbsp;|&#160;|\s)+Links to (?:an\s+)?external site\.?(\s*</|\s*$)`)
+	canvasBareMidRegex          = regexp.MustCompile(`(?i)(?:&nbsp;|&#160;|\s)*Links to (?:an\s+)?external site\.?(?:\s*)`)
+)
+
+func cleanCanvasHTML(rawHTML string) string {
+	if rawHTML == "" {
+		return ""
+	}
+	res := canvasScreenreaderSpanRegex.ReplaceAllString(rawHTML, "")
+	res = canvasTitleSpanRegex.ReplaceAllString(res, "")
+	res = canvasParenthesizedRegex.ReplaceAllString(res, "")
+	res = canvasBareEndRegex.ReplaceAllString(res, "$1")
+	res = canvasBareMidRegex.ReplaceAllString(res, " ")
+	return res
+}
+
+func normalizeIDString(val any) string {
+	if val == nil {
+		return ""
+	}
+	switch v := val.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		return fmt.Sprintf("%.0f", v)
+	case float32:
+		return fmt.Sprintf("%.0f", v)
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
+func parseDateString(dateStr string) (time.Time, bool, error) {
+	return google.ParseDateString(dateStr)
+}
 
 func getCanvasAuth(authRecord *core.Record) (string, string, error) {
 	if authRecord == nil {
@@ -163,6 +209,15 @@ func applyCanvasColorsToRecords(app core.App, authRecord *core.Record, canvasCol
 			calendar.SetColor(calendarColor)
 			if err := app.Save(calendar); err != nil {
 				errs = append(errs, fmt.Errorf("failed to update color for calendar %s: %w", calendar.Name(), err))
+			}
+			if labelID := calendar.LabelID(); labelID != "" {
+				if labelRec, err := app.FindRecordById(proxies.CollectionLabels, labelID); err == nil && labelRec != nil {
+					lblProxy := proxies.NewLabel(labelRec)
+					if lblProxy.Color() != calendarColor {
+						lblProxy.SetColor(calendarColor)
+						_ = app.Save(lblProxy)
+					}
+				}
 			}
 		}
 	}
@@ -579,6 +634,7 @@ func upsertTaskRecord(
 		task.SetCalendarID(calendarID)
 		task.SetName(name)
 		task.SetDueDate(dueDate)
+		task.SetSource(proxies.TaskSourceCanvas)
 
 		if status != nil {
 			task.SetStatus(*status)
@@ -602,6 +658,11 @@ func upsertTaskRecord(
 
 	// Existing record — only update fields that were actually provided
 	changes := false
+
+	if task.Source() != proxies.TaskSourceCanvas {
+		task.SetSource(proxies.TaskSourceCanvas)
+		changes = true
+	}
 
 	if task.CalendarID() != calendarID {
 		task.SetCalendarID(calendarID)
@@ -631,7 +692,8 @@ func upsertTaskRecord(
 	return false, true, app.Save(task)
 }
 
-func canvasSync(app core.App) func(event *core.RequestEvent) error {
+// handleCanvasSync handles the incoming POST /api/sync/canvas HTTP request.
+func handleCanvasSync(app core.App) func(event *core.RequestEvent) error {
 	return func(event *core.RequestEvent) error {
 		authRecord, err := getAuth(app, event)
 		if err != nil {
@@ -765,6 +827,15 @@ func runCanvasSyncForUser(app core.App, authRecord *core.Record) (*CanvasSyncRes
 				}
 				if needsPersist {
 					_ = app.Save(cal)
+					if labelID := cal.LabelID(); labelID != "" && resolvedColor != "" {
+						if labelRec, err := app.FindRecordById(proxies.CollectionLabels, labelID); err == nil && labelRec != nil {
+							lblProxy := proxies.NewLabel(labelRec)
+							if lblProxy.Color() != resolvedColor {
+								lblProxy.SetColor(resolvedColor)
+								_ = app.Save(lblProxy)
+							}
+						}
+					}
 				}
 			} else {
 				newCal := proxies.NewCalendarRecord(calendarsCollection)
@@ -959,7 +1030,7 @@ func runCanvasSyncForUser(app core.App, authRecord *core.Record) (*CanvasSyncRes
 					)
 					desc := ""
 					if d, ok := plannableData["message"].(string); ok {
-						desc = d
+						desc = cleanCanvasHTML(d)
 					}
 
 					var targetAnn *proxies.Event

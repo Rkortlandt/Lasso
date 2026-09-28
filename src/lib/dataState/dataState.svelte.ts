@@ -1,5 +1,6 @@
 import { pb } from "$lib/pocketbase";
 import { type CalendarRecord, type TaskRecord, type EventRecord, type SyncStatusRecord, type LabelRecord } from "$lib/dataState/dataRecordInterfaces";
+import { errorState, isConnectionError } from "$lib/errorState.svelte";
 
 interface workerState {
 	inFlight: boolean;
@@ -44,6 +45,7 @@ class DataState {
 	private _syncStatus = $state<SyncStatusRecord | null>(null);
 	private _loading = $state<boolean>(false);
 	private _refreshing = $state<boolean>(false);
+	private _isBackendReachable = $state<boolean>(true);
 	private _subscriptionRefs: (() => void)[] = [];
 
 	get calendars(): readonly CalendarRecord[] {
@@ -63,6 +65,9 @@ class DataState {
 	}
 	get loading(): boolean {
 		return this._loading;
+	}
+	get isBackendReachable(): boolean {
+		return this._isBackendReachable;
 	}
 
 	// Canvas Sync Getters
@@ -211,8 +216,13 @@ class DataState {
 			this._events = mergeWithInFlight(evts, this._events, "events");
 			this._labels = mergeWithInFlight(lbls, this._labels, "labels");
 			this._syncStatus = syncRecord;
-		} catch (err) {
+			this._isBackendReachable = true;
+		} catch (err: any) {
 			console.error("Failed to refresh data:", err);
+			if (isConnectionError(err)) {
+				this._isBackendReachable = false;
+				errorState.show("Unable to connect to Lasso backend server");
+			}
 		} finally {
 			this._refreshing = false;
 		}
@@ -246,10 +256,17 @@ class DataState {
 			this._events = evts;
 			this._labels = lbls;
 			this._syncStatus = syncRecord;
+			this._isBackendReachable = true;
 
 			await this.subscribeToSync();
-		} catch (err) {
+		} catch (err: any) {
 			console.error("Failed to load initial data:", err);
+			if (isConnectionError(err)) {
+				this._isBackendReachable = false;
+				errorState.show("Unable to connect to Lasso backend server");
+			} else {
+				errorState.show("Failed to load initial data");
+			}
 		} finally {
 			this._loading = false;
 		}
@@ -292,6 +309,12 @@ class DataState {
 						(record.google_export_synced_at && record.google_export_synced_at !== prevGoogleExportSync)
 					) {
 						this.refresh();
+					} else if (record.canvas_status === "error" && record.canvas_error) {
+						errorState.show(`Canvas sync failed: ${record.canvas_error}`);
+					} else if (record.google_import_status === "error" && record.google_import_error) {
+						errorState.show(`Google sync failed: ${record.google_import_error}`);
+					} else if (record.google_export_status === "error" && record.google_export_error) {
+						errorState.show(`Google export failed: ${record.google_export_error}`);
 					}
 				} else if (event.action === "delete") {
 					this._syncStatus = null;
@@ -400,10 +423,16 @@ class DataState {
 			}
 
 			return createdRecord;
-		} catch (err) {
+		} catch (err: any) {
 			this.pendingCreations.delete(tempId);
 			setList(getList().filter((item) => item.id !== tempId));
 			console.error(`Failed to create ${collectionName} record, rolled back:`, err);
+			if (isConnectionError(err)) {
+				this._isBackendReachable = false;
+				errorState.show("Unable to connect to Lasso backend server. Changes reverted.");
+			} else {
+				errorState.show(`Failed to create ${collectionName}. Changes reverted.`);
+			}
 			throw err;
 		} finally {
 			// Free fingerprint after 400ms to allow future intentional duplicates
@@ -525,6 +554,12 @@ class DataState {
 			}
 			this.updateWorkers.delete(id);
 			console.error(`Failed to update ${collectionName} record:`, err);
+			if (isConnectionError(err)) {
+				this._isBackendReachable = false;
+				errorState.show("Unable to connect to Lasso backend server. Changes reverted.");
+			} else {
+				errorState.show(`Failed to save ${collectionName} changes. Reverted.`);
+			}
 			throw err;
 		}
 	}
@@ -566,6 +601,12 @@ class DataState {
 			freshList.splice(itemIndex, 0, originalRecord);
 			setList(freshList);
 			console.error(`Failed to delete ${collectionName} record, rolled back:`, err);
+			if (isConnectionError(err)) {
+				this._isBackendReachable = false;
+				errorState.show("Unable to connect to Lasso backend server. Record restored.");
+			} else {
+				errorState.show(`Failed to delete ${collectionName}. Record restored.`);
+			}
 			throw err;
 		} finally {
 			this.pendingDeletes.delete(id);
@@ -603,21 +644,31 @@ class DataState {
 
 	// Optimistic Mutations for Tasks
 	async addTask(taskData: Omit<TaskRecord, "id">): Promise<TaskRecord> {
+		const safeData = {
+			...taskData,
+			source: taskData.source || "todo",
+		};
 		return this.optimisticAdd(
 			() => this._tasks,
 			(val) => (this._tasks = val),
 			"tasks",
-			taskData,
+			safeData,
 		);
 	}
 
 	async updateTask(id: string, patch: Partial<TaskRecord>): Promise<TaskRecord> {
+		const currentTask = this._tasks.find((t) => t.id === id);
+		const effectiveSource = patch.source || currentTask?.source || "todo";
+		const safePatch: Partial<TaskRecord> = {
+			...patch,
+			source: effectiveSource,
+		};
 		return this.optimisticUpdate(
 			() => this._tasks,
 			(val) => (this._tasks = val),
 			"tasks",
 			id,
-			patch,
+			safePatch,
 		);
 	}
 

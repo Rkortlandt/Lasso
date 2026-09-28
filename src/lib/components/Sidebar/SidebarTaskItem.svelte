@@ -2,12 +2,14 @@
 	import GripVertical from "@lucide/svelte/icons/grip-vertical";
 	import CheckIcon from "@lucide/svelte/icons/check";
 	import Trash2 from "@lucide/svelte/icons/trash-2";
+	import ExternalLink from "@lucide/svelte/icons/external-link";
 	import { authState } from "$lib/authState.svelte";
 	import { dataState } from "$lib/dataState/dataState.svelte";
 	import { dragState, type DragTaskPayload } from "$lib/dragState.svelte";
 	import { parseTaskCalendarId } from "$lib/dataState/taskQueries.svelte";
 	import { resolveCalendarColor } from "$lib/dataState/calendarQueries.svelte";
 	import { pageState } from "$lib/pageSystem.svelte";
+	import { calendarSelectionState } from "$lib/calendarSelectionState.svelte";
 	import type {
 		CalendarRecord,
 		TaskRecord,
@@ -184,13 +186,19 @@
 
 	<!-- Right section: Overlaps and overrides drag and cursor -->
 	{#if canvasUrl}
-		<a
-			href={canvasUrl}
-			target="_blank"
-			rel="noopener noreferrer"
-			draggable="false"
+		<div
+			role="button"
+			tabindex="0"
 			class="group/task-link flex-1 min-w-0 flex items-start gap-1.5 px-1 py-1.5 cursor-pointer no-underline bg-transparent"
-			title={`Open ${task.name} in Canvas`}
+			title={`Click to view on calendar: ${task.name}`}
+			onclick={() => calendarSelectionState.openTaskEvent(task, calendar)}
+			onkeydown={(e) => {
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					calendarSelectionState.openTaskEvent(task, calendar);
+				}
+			}}
+			draggable="false"
 			ondragstart={(e) => {
 				e.preventDefault();
 				e.stopPropagation();
@@ -224,32 +232,57 @@
 					>
 						{task.name}
 					</p>
-					{#if completed && task.grade}
-						<span
-							class="text-[9px] font-semibold font-mono text-emerald-600 dark:text-emerald-400 shrink-0 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 leading-none"
-							title={`Grade: ${task.grade}`}
-						>
-							{task.grade}
-						</span>
-					{/if}
+					<a
+						href={canvasUrl}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="opacity-0 group-hover/task:opacity-100 hover:text-foreground text-muted-foreground/40 hover:bg-sidebar-accent/50 p-0.5 rounded transition-all cursor-pointer shrink-0"
+						title="Open in Canvas"
+						aria-label={`Open ${task.name} in Canvas`}
+						onclick={(e) => {
+							e.stopPropagation();
+						}}
+					>
+						<ExternalLink class="size-3" />
+					</a>
 				</div>
 
-				{#if formattedDue}
-					<span
-						class="text-[9px] text-muted-foreground/75 block {completed
-							? 'font-mono'
-							: ''}"
-					>
-						{formattedDue}
-					</span>
+				{#if formattedDue || (completed && task.grade)}
+					<div class="flex items-center gap-1.5 text-[9px] leading-tight">
+						{#if formattedDue}
+							<span
+								class="text-muted-foreground/75 {completed
+									? 'font-mono'
+									: ''}"
+							>
+								{formattedDue}
+							</span>
+						{/if}
+						{#if completed && task.grade}
+							<span
+								class="font-mono text-emerald-600 dark:text-emerald-400 font-medium"
+								title={`Grade: ${task.grade}`}
+							>
+								{task.grade}
+							</span>
+						{/if}
+					</div>
 				{/if}
 			</div>
-		</a>
+		</div>
 	{:else}
 		<div
-			role="presentation"
-			class="flex-1 min-w-0 flex items-start gap-1.5 px-1 py-1.5 cursor-default bg-transparent"
+			role="button"
+			tabindex="0"
+			class="flex-1 min-w-0 flex items-start gap-1.5 px-1 py-1.5 cursor-pointer bg-transparent"
 			draggable="false"
+			onclick={() => calendarSelectionState.openTaskEvent(task, calendar)}
+			onkeydown={(e) => {
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					calendarSelectionState.openTaskEvent(task, calendar);
+				}
+			}}
 			ondragstart={(e) => {
 				e.preventDefault();
 				e.stopPropagation();
@@ -312,14 +345,6 @@
 							{/if}
 						</span>
 					</p>
-					{#if completed && task.grade}
-						<span
-							class="text-[9px] font-semibold font-mono text-emerald-600 dark:text-emerald-400 shrink-0 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 leading-none"
-							title={`Grade: ${task.grade}`}
-						>
-							{task.grade}
-						</span>
-					{/if}
 					{#if onDelete}
 						<button
 							type="button"
@@ -336,14 +361,30 @@
 					{/if}
 				</div>
 
-				{#if formattedDue}
-					<span
-						class="text-[9px] text-muted-foreground/75 block transition-opacity duration-200 {isChecking || completed
-							? 'font-mono opacity-50'
+				{#if formattedDue || (completed && task.grade)}
+					<div
+						class="flex items-center gap-1.5 text-[9px] leading-tight transition-opacity duration-200 {isChecking || completed
+							? 'opacity-70'
 							: ''}"
 					>
-						{formattedDue}
-					</span>
+						{#if formattedDue}
+							<span
+								class="text-muted-foreground/75 {isChecking || completed
+									? 'font-mono'
+									: ''}"
+							>
+								{formattedDue}
+							</span>
+						{/if}
+						{#if completed && task.grade}
+							<span
+								class="font-mono text-emerald-600 dark:text-emerald-400 font-medium"
+								title={`Grade: ${task.grade}`}
+							>
+								{task.grade}
+							</span>
+						{/if}
+					</div>
 				{/if}
 			</div>
 		</div>

@@ -10,10 +10,20 @@
 	import { fly, fade } from "svelte/transition";
 </script>
 
-<div class="absolute inset-0 flex flex-col overflow-hidden">
+<div class="absolute inset-0 flex flex-col overflow-hidden bg-background">
+	<!-- Diagonal Grid Background Shifting to the Left -->
+	<div
+		class="diagonal-grid-container"
+		aria-hidden="true"
+		in:fade={{ duration: 250, delay: 150 }}
+		out:fade={{ duration: 80 }}
+	>
+		<div class="diagonal-grid-pattern"></div>
+	</div>
+
 	<!-- Top header bar that slides in and out from the top -->
 	<header
-		class="flex h-14 items-center gap-3 border-b border-border px-6 shrink-0 z-10 bg-sidebar"
+		class="flex h-14 items-center gap-3 border-b border-border px-6 shrink-0 z-10 bg-sidebar/90 backdrop-blur-xs"
 		transition:fly={{ y: -56, duration: 300 }}
 	>
 		<Button
@@ -34,7 +44,7 @@
 
 	<!-- Page content body that fades in after the header slides in -->
 	<div
-		class="flex-1 overflow-y-auto p-6 md:p-8 w-full"
+		class="flex-1 overflow-y-auto p-6 md:p-8 w-full z-1"
 		in:fade={{ duration: 300, delay: 200 }}
 		out:fade={{ duration: 150 }}
 	>
@@ -51,5 +61,32 @@
 <style>
 	h2 {
 		margin: 0px;
+	}
+
+	.diagonal-grid-container {
+		position: absolute;
+		inset: 0;
+		overflow: hidden;
+		pointer-events: none;
+		z-index: 0;
+	}
+
+	.diagonal-grid-pattern {
+		position: absolute;
+		inset: -200px;
+		background-size: 72px 72px;
+		background-repeat: repeat;
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72' viewBox='0 0 72 72'%3E%3Cpath d='M0 0L72 72M72 0L0 72' stroke='%23888888' stroke-width='1' stroke-opacity='0.09'/%3E%3C/svg%3E");
+		animation: shiftDiagonalLeft 240s linear infinite;
+		will-change: background-position;
+	}
+
+	@keyframes shiftDiagonalLeft {
+		0% {
+			background-position: 0 0;
+		}
+		100% {
+			background-position: -1440px 0;
+		}
 	}
 </style>

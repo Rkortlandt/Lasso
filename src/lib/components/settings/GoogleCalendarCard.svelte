@@ -13,6 +13,7 @@
 		resolveCalendarColor,
 	} from "$lib/dataState/calendarQueries.svelte";
 	import type { CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
+	import { portal } from "$lib/portal";
 	import { Button } from "$lib/components/ui/button";
 	import CalendarIcon from "@lucide/svelte/icons/calendar";
 	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
@@ -266,16 +267,6 @@
 		try {
 			const trimmed = nicknameInput.trim();
 			await dataState.updateCalendar(calendarId, { nickname: trimmed });
-			await fetch(`${POCKETBASE_URL}/api/calendar/nickname`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: pb.authStore.token
-						? `Bearer ${pb.authStore.token}`
-						: "",
-				},
-				body: JSON.stringify({ calendarId, nickname: trimmed }),
-			}).catch(() => {});
 			nicknameSuccessId = calendarId;
 			setTimeout(() => {
 				if (nicknameSuccessId === calendarId) nicknameSuccessId = null;
@@ -291,16 +282,6 @@
 		isSavingNickname = true;
 		try {
 			await dataState.updateCalendar(calendarId, { nickname: "" });
-			await fetch(`${POCKETBASE_URL}/api/calendar/nickname`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: pb.authStore.token
-						? `Bearer ${pb.authStore.token}`
-						: "",
-				},
-				body: JSON.stringify({ calendarId, nickname: "" }),
-			}).catch(() => {});
 			nicknameInput = "";
 			nicknameSuccessId = calendarId;
 			setTimeout(() => {
@@ -806,6 +787,7 @@
 {#if showDisconnectModal}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
+		use:portal
 		class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-xs"
 		transition:fade={{ duration: 150 }}
 		onclick={(e) => {
@@ -889,11 +871,11 @@
 	>
 		<!-- Clickable header card with right-aligned grey outlined visibility button -->
 		<div
-			class="w-full p-2.5 flex items-center justify-between gap-2.5 select-none"
+			class="w-full flex items-stretch select-none"
 		>
 			<button
 				type="button"
-				class="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer text-left group bg-transparent border-none p-0"
+				class="flex items-center gap-2.5 min-w-0 flex-1 px-3.5 py-3 cursor-pointer text-left group bg-transparent border-none"
 				onclick={() => toggleExpand(calendar)}
 				aria-expanded={isExpanded}
 			>
@@ -912,7 +894,7 @@
 				</span>
 			</button>
 
-			<div class="flex items-center gap-2 shrink-0">
+			<div class="flex items-center gap-2 pr-3 shrink-0">
 				<!-- Grey outlined visibility button matching CanvasCard -->
 				<button
 					type="button"
@@ -940,7 +922,7 @@
 
 				<button
 					type="button"
-					class="p-1 text-muted-foreground hover:text-foreground cursor-pointer bg-transparent border-none"
+					class="h-full flex items-center px-1 text-muted-foreground hover:text-foreground cursor-pointer bg-transparent border-none"
 					onclick={() => toggleExpand(calendar)}
 					aria-label="Toggle details"
 				>

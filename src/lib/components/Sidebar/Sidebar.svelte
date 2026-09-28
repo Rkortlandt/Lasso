@@ -413,7 +413,7 @@
 	}
 
 	$effect(() => {
-		if (!dataState.loading && authState.record?.id && !getTodoCalendar()) {
+		if (!dataState.loading && dataState.isBackendReachable && authState.record?.id && !getTodoCalendar()) {
 			ensureTodoCalendar();
 		}
 	});
@@ -477,7 +477,7 @@
 >
 	<!-- Top header with branding and sidebar collapse button -->
 	<div
-		class="relative flex h-14 items-center border-b border-sidebar-border relative z-10 bg-sidebar shrink-0 overflow-hidden transition-all duration-300 flex-row-reverse"
+		class="relative flex h-14 items-center border-b border-sidebar-border z-10 bg-sidebar shrink-0 overflow-hidden flex-row-reverse"
 	>
 		<div class="w-14 h-14 flex items-center justify-center">
 			<Button
@@ -497,7 +497,7 @@
 		</div>
 		{#if !isSidebarCollapsed}
 			<div
-				class="absolute top-1/2 translate-y-[-50%] left-2 flex items-center min-w-0 select-none overflow-hidden transition-all duration-500"
+				class="absolute top-1/2 translate-y-[-50%] left-2 flex items-center min-w-0 select-none overflow-hidden"
 				transition:fade={{ duration: 150 }}
 			>
 				<img
@@ -693,7 +693,7 @@
 
 	<!-- User display at the bottom -->
 	<div
-		class="border-t border-sidebar-border h-14 flex items-center shrink-0 overflow-hidden transition-all duration-300 {isSidebarCollapsed
+		class="border-t border-sidebar-border h-14 flex items-center shrink-0 overflow-hidden transition-[padding] duration-300 {isSidebarCollapsed
 			? 'justify-center px-0'
 			: 'px-2.5'}"
 	>

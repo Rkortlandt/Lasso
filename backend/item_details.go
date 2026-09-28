@@ -20,7 +20,8 @@ type CanvasItemRequest struct {
 	SourceLink string `json:"sourceLink"`
 }
 
-func getCanvasItemDetails(app core.App) func(e *core.RequestEvent) error {
+// handleCanvasItemDetails handles the incoming POST /api/canvas/item HTTP request.
+func handleCanvasItemDetails(app core.App) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		authRecord, err := getAuth(app, e)
 		if err != nil {
@@ -179,6 +180,13 @@ func getCanvasItemDetails(app core.App) func(e *core.RequestEvent) error {
 
 		if foundItem == nil {
 			return e.NotFoundError("Item not found on Canvas", nil)
+		}
+
+		if msg, ok := foundItem["message"].(string); ok {
+			foundItem["message"] = cleanCanvasHTML(msg)
+		}
+		if desc, ok := foundItem["description"].(string); ok {
+			foundItem["description"] = cleanCanvasHTML(desc)
 		}
 
 		return e.JSON(http.StatusOK, map[string]any{

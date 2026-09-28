@@ -223,7 +223,7 @@
 				<!-- Static current time subtle guide line across grid (visible only when Today is in view) -->
 				{#if isTodayVisible}
 					<div
-						class="absolute left-0 right-0 h-[1px] bg-white/20 pointer-events-none z-20"
+						class="absolute left-0 right-0 h-[1px] bg-foreground/20 dark:bg-white/20 pointer-events-none z-0"
 						style="top: {currentDayTimePercent}%; transform: translateY(-50%);"
 						transition:fade={{ duration: 150 }}
 					></div>
@@ -260,15 +260,15 @@
 							<!-- Prominent Today Current Time Indicator -->
 							{#if isColToday && isTodayVisible}
 								<div
-									class="absolute left-0 right-0 z-30 pointer-events-none flex items-center"
+									class="absolute left-0 right-0 z-0 pointer-events-none flex items-center"
 									style="top: {currentDayTimePercent}%; transform: translateY(-50%);"
 									transition:fade={{ duration: 150 }}
 								>
 									<div
-										class="w-[2px] h-3 bg-white shrink-0 rounded-full translate-x-[-75%]"
+										class="w-[2.5px] h-3.5 bg-foreground dark:bg-white shrink-0 rounded-full translate-x-[-75%] shadow-xs"
 									></div>
 									<div
-										class="flex-1 h-[1.5px] bg-white translate-x-[-1.5px]"
+										class="flex-1 h-[2px] bg-foreground dark:bg-white translate-x-[-1.5px] shadow-xs"
 									></div>
 								</div>
 							{/if}

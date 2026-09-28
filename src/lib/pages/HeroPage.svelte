@@ -8,7 +8,9 @@
 	import { themeState } from "$lib/themeState.svelte";
 	import { syncController } from "$lib/syncController.svelte";
 	import { dataState } from "$lib/dataState/dataState.svelte";
+	import { errorState } from "$lib/errorState.svelte";
 	import { parseTaskCalendarId } from "$lib/dataState/taskQueries.svelte";
+	import { calendarSelectionState } from "$lib/calendarSelectionState.svelte";
 	import {
 		getDayDeadlines,
 		getDayAnnouncements,
@@ -99,34 +101,27 @@
 			}
 		}
 
-		await dataState.addEvent({
-			calendar: targetCalId,
-			task: payload.taskId,
-			title: payload.taskName,
-			start: startDate.toISOString(),
-			end: endDate.toISOString(),
-			allday: false,
-			deadline: false,
-			color: "",
-			description: `Work session for ${payload.taskName}`,
-		});
+		try {
+			await dataState.addEvent({
+				calendar: targetCalId,
+				task: payload.taskId,
+				title: payload.taskName,
+				start: startDate.toISOString(),
+				end: endDate.toISOString(),
+				allday: false,
+				deadline: false,
+				color: "",
+				description: `Work session for ${payload.taskName}`,
+			});
+		} catch (err: any) {
+			console.error("Failed to schedule work session:", err);
+		}
 	}
 
 	async function onDeleteEvent(evt: FormattedTimedEvent) {
 		if (!evt.rawId || !evt.isTaskBlock) return;
 		await dataState.deleteEvent(evt.rawId);
 	}
-
-	interface SelectedOverlayItem {
-		title: string;
-		side: "left" | "right";
-		itemType: "event" | "announcement" | "deadline";
-		courseId: string;
-		description?: string;
-		source_link?: string;
-	}
-
-	let selectedOverlayItem = $state<SelectedOverlayItem | null>(null);
 
 	function handleSelectItem(
 		item: any,
@@ -135,6 +130,7 @@
 	) {
 		const side: "left" | "right" = visibleColIndex < 4 ? "right" : "left";
 		let courseId = "";
+		let taskId = item.taskId || item.task?.id || (typeof item.task === "string" ? item.task : undefined);
 
 		if (item.task) {
 			const calId = parseTaskCalendarId(item.task);
@@ -144,31 +140,41 @@
 			const calId = item.event.calendar;
 			const cal = dataState.calendars.find((c) => c.id === calId);
 			courseId = cal?.course_id || "";
+			if (!taskId && item.event.task) taskId = item.event.task;
 		} else if (item.rawEvent) {
 			const calId = item.rawEvent.calendar;
 			const cal = dataState.calendars.find((c) => c.id === calId);
 			courseId = cal?.course_id || "";
+			if (!taskId && item.rawEvent.task) taskId = item.rawEvent.task;
 		} else if (item.calendarId) {
 			const cal = dataState.calendars.find((c) => c.id === item.calendarId);
 			courseId = cal?.course_id || "";
 		}
 
 		let sourceLink = item.task?.source_link || item.source_link || "";
-		if (!sourceLink && item.taskId) {
-			const tsk = dataState.tasks.find((t) => t.id === item.taskId);
+		if (!sourceLink && taskId) {
+			const tsk = dataState.tasks.find((t) => t.id === taskId);
 			if (tsk) {
 				sourceLink = tsk.source_link || "";
 			}
 		}
 
-		selectedOverlayItem = {
+		const id = item.id
+			? (item.id.startsWith("evt_") || item.id.startsWith("dl_")
+				? item.id
+				: (type === "deadline" ? `dl_${item.id}` : `evt_${item.id}`))
+			: "";
+
+		calendarSelectionState.selectItem({
+			id,
+			taskId,
 			title: item.name || item.title || "",
 			side,
 			itemType: type,
 			courseId,
 			description: item.description,
 			source_link: sourceLink,
-		};
+		});
 	}
 
 	function handleSelectAllDayEvent(title: string, visibleColIndex: number) {
@@ -176,6 +182,7 @@
 		const evt = dataState.events.find((e) => e.title === title && e.allday);
 		let courseId = "";
 		let sourceLink = "";
+		let taskId = evt?.task;
 		if (evt?.calendar) {
 			const cal = dataState.calendars.find((c) => c.id === evt.calendar);
 			courseId = cal?.course_id || "";
@@ -186,14 +193,16 @@
 				sourceLink = tsk.source_link || "";
 			}
 		}
-		selectedOverlayItem = {
+		calendarSelectionState.selectItem({
+			id: evt ? `evt_${evt.id}` : "",
+			taskId,
 			title,
 			side,
 			itemType: "event",
 			courseId,
 			description: evt?.description,
 			source_link: sourceLink,
-		};
+		});
 	}
 
 	// Watch dayState.value changes for carousel sliding
@@ -307,16 +316,16 @@
 		onSelectItem={handleSelectItem}
 	/>
 
-	{#if selectedOverlayItem}
+	{#if calendarSelectionState.selectedItem}
 		<CalendarItemOverlay
-			title={selectedOverlayItem?.title ?? ""}
-			side={selectedOverlayItem?.side ?? "right"}
-			itemType={selectedOverlayItem?.itemType ?? "event"}
-			courseId={selectedOverlayItem?.courseId ?? ""}
-			description={selectedOverlayItem?.description}
-			source_link={selectedOverlayItem?.source_link}
+			title={calendarSelectionState.selectedItem?.title ?? ""}
+			side={calendarSelectionState.selectedItem?.side ?? "right"}
+			itemType={calendarSelectionState.selectedItem?.itemType ?? "event"}
+			courseId={calendarSelectionState.selectedItem?.courseId ?? ""}
+			description={calendarSelectionState.selectedItem?.description}
+			source_link={calendarSelectionState.selectedItem?.source_link}
 			onClose={() => {
-				selectedOverlayItem = null;
+				calendarSelectionState.close();
 			}}
 		/>
 	{/if}

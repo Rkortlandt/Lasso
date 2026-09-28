@@ -3,6 +3,8 @@
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
 	import Button from "$lib/components/ui/button/button.svelte";
 	import { dayState } from "$lib/dayState.svelte";
+	import { errorState } from "$lib/errorState.svelte";
+	import { dragState } from "$lib/dragState.svelte";
 	import type { DayItem } from "./calendarTypes";
 	import CalendarDropOverlay from "./CalendarDropOverlay.svelte";
 
@@ -23,6 +25,15 @@
 		isAnimating,
 		onTransitionEnd,
 	}: Props = $props();
+
+	const isOverlayVisible = $derived(errorState.isVisible || dragState.isDragging);
+	const overlayMode = $derived(errorState.currentError ? errorState.mode : "default");
+	const overlayMiddleCount = $derived(errorState.currentError ? 4 : 3);
+	const overlayText = $derived(
+		dragState.isDragging && !errorState.isVisible
+			? "Drop task onto calendar to schedule a work event"
+			: (errorState.currentError || "Drop task onto calendar to schedule a work event")
+	);
 </script>
 
 <header class="flex h-14 items-center gap-2 px-2 shrink-0 z-10">
@@ -39,7 +50,13 @@
 	</div>
 
 	<div class="flex-1 h-full overflow-hidden relative">
-		<CalendarDropOverlay {visibleCount} />
+		<CalendarDropOverlay
+			{visibleCount}
+			middleCount={overlayMiddleCount}
+			show={isOverlayVisible}
+			mode={overlayMode}
+			text={overlayText}
+		/>
 
 		<div
 			class="h-full flex flex-row items-center"

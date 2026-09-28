@@ -42,6 +42,7 @@
 				user: userId,
 				calendar: cal.id,
 				name,
+				source: "todo",
 				status: "todo",
 				priority: "med",
 			});

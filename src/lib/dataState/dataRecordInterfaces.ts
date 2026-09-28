@@ -11,7 +11,15 @@ export interface EventRecord {
 	announcement?: boolean;
 	color?: string;
 	description?: string;
+	recurr?: string;
+	recurr_event_id?: string;
+	recurr_og_date?: string;
+	exdate?: string[] | string;
+	timezone?: string;
+	source?: "canvas" | "google" | "internal" | string;
 	google_event_id?: string;
+	event_label_id?: string;
+	label_name?: string;
 	expand?: {
 		calendar?: CalendarRecord;
 		task?: TaskRecord;
@@ -55,6 +63,7 @@ export interface TaskRecord {
 	calendar?: string | string[] | Record<string, any>;
 	calendar_id?: string | string[];
 	name: string;
+	source: "todo" | "canvas" | "google";
 	status?: "todo" | "done" | string;
 	priority?: "low" | "med" | "high" | string;
 	grade?: string;

@@ -13,6 +13,14 @@
 	import AlertTriangleIcon from "@lucide/svelte/icons/alert-triangle";
 	import EyeIcon from "@lucide/svelte/icons/eye";
 	import EyeOffIcon from "@lucide/svelte/icons/eye-off";
+	import PaletteIcon from "@lucide/svelte/icons/palette";
+	import ClockIcon from "@lucide/svelte/icons/clock";
+	import PlusIcon from "@lucide/svelte/icons/plus";
+	import Trash2Icon from "@lucide/svelte/icons/trash-2";
+	import PencilIcon from "@lucide/svelte/icons/pencil";
+	import MapPinIcon from "@lucide/svelte/icons/map-pin";
+	import ClassScheduleModal from "$lib/components/calendar/ClassScheduleModal.svelte";
+	import { portal } from "$lib/portal";
 	import { calendarVisibilityState } from "$lib/calendarVisibilityState.svelte";
 	import { fade, slide, scale } from "svelte/transition";
 	import { dataState } from "$lib/dataState/dataState.svelte";
@@ -22,7 +30,19 @@
 		getPreviousCourseworkCalendars,
 		resolveCalendarColor,
 	} from "$lib/dataState/calendarQueries.svelte";
-	import { type CalendarRecord } from "$lib/dataState/dataRecordInterfaces";
+	import {
+		type CalendarRecord,
+		type EventRecord,
+	} from "$lib/dataState/dataRecordInterfaces";
+	import { themeState } from "$lib/themeState.svelte";
+	import {
+		CANVAS_PRESET_PALETTE,
+		generateThemeHarmonicPalette,
+		getThemeBaseHue,
+		oklchToHex,
+		hexToOklch,
+		type ColorSwatch,
+	} from "$lib/colorUtils";
 
 	let showConnectForm = $state(false);
 	let showDisconnectModal = $state(false);
@@ -38,30 +58,144 @@
 	const previousCourses = $derived(getPreviousCourseworkCalendars());
 	let isPreviousCoursesExpanded = $state(false);
 
+	// Harmonic Theme Palette derived from active theme accent
+	const themeBaseHue = $derived(
+		getThemeBaseHue(
+			themeState.accentId,
+			themeState.customHue,
+			themeState.currentAccent.swatch,
+		),
+	);
+	const harmonicPalette = $derived(generateThemeHarmonicPalette(themeBaseHue));
+
 	// Section detail & nickname state
 	let expandedCourseId = $state<string | null>(null);
 	let nicknameInput = $state("");
 	let isSavingNickname = $state(false);
 	let nicknameSuccessId = $state<string | null>(null);
 
-	const swatchColors = [
-		"#16a34a", // green
-		"#9333ea", // purple
-		"#b45309", // brown/olive
-		"#15803d", // dark green
-		"#2563eb", // blue
-		"#db2777", // pink
-		"#0d9488", // teal
-		"#ea580c", // orange
-	];
+	// Course color customization state
+	let customHues = $state<Record<string, number>>({});
+	let customHexInputs = $state<Record<string, string>>({});
+	let isCustomMode = $state<Record<string, boolean>>({});
+	let colorSavingState = $state<Record<string, boolean>>({});
+	let colorSuccessState = $state<Record<string, boolean>>({});
+	let colorDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-	function getSwatch(idx: number): string {
-		return swatchColors[idx % swatchColors.length];
+	function getCourseHue(course: CalendarRecord): number {
+		if (customHues[course.id] !== undefined) return customHues[course.id];
+		const oklch = hexToOklch(course.color || "#3b82f6");
+		return oklch ? Math.round(oklch.h) : 180;
+	}
+
+	function isCourseCustom(course: CalendarRecord): boolean {
+		if (isCustomMode[course.id] !== undefined) return isCustomMode[course.id];
+		if (!course.color) return false;
+		const hexLower = course.color.toLowerCase();
+		const isPreset = CANVAS_PRESET_PALETTE.some(
+			(p) => p.hex.toLowerCase() === hexLower,
+		);
+		const isHarmonic = harmonicPalette.allThemeSwatches.some(
+			(p) => p.hex.toLowerCase() === hexLower,
+		);
+		return !isPreset && !isHarmonic;
+	}
+
+	function getCourseHexInput(course: CalendarRecord): string {
+		if (customHexInputs[course.id] !== undefined)
+			return customHexInputs[course.id];
+		return course.color || "#3b82f6";
+	}
+
+	async function setCourseColor(
+		course: CalendarRecord,
+		hex: string,
+		isFromCustom = false,
+	) {
+		let normalizedHex = hex.trim();
+		if (!normalizedHex.startsWith("#")) {
+			normalizedHex = "#" + normalizedHex;
+		}
+		normalizedHex = normalizedHex.toLowerCase();
+
+		// Update local state optimistically
+		await dataState.updateCalendar(course.id, { color: normalizedHex });
+
+		if (isFromCustom) {
+			isCustomMode[course.id] = true;
+			const oklch = hexToOklch(normalizedHex);
+			if (oklch) {
+				customHues[course.id] = Math.round(oklch.h);
+			}
+			customHexInputs[course.id] = normalizedHex;
+		} else {
+			isCustomMode[course.id] = false;
+			customHexInputs[course.id] = normalizedHex;
+		}
+
+		// Debounce backend sync to Canvas and PocketBase
+		if (colorDebounceTimers.has(course.id)) {
+			clearTimeout(colorDebounceTimers.get(course.id));
+		}
+
+		colorSavingState[course.id] = true;
+		colorSuccessState[course.id] = false;
+
+		const timer = setTimeout(async () => {
+			try {
+				const res = await fetch(`${POCKETBASE_URL}/api/canvas/color`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: pb.authStore.token
+							? `Bearer ${pb.authStore.token}`
+							: "",
+					},
+					body: JSON.stringify({
+						calendarId: course.id,
+						courseId: course.course_id,
+						hexcode: normalizedHex,
+					}),
+				});
+				if (res.ok) {
+					colorSuccessState[course.id] = true;
+					setTimeout(() => {
+						colorSuccessState[course.id] = false;
+					}, 3000);
+				}
+			} catch (err) {
+				console.error("Failed to sync color to Canvas:", err);
+			} finally {
+				colorSavingState[course.id] = false;
+				colorDebounceTimers.delete(course.id);
+			}
+		}, 350);
+
+		colorDebounceTimers.set(course.id, timer);
+	}
+
+	function handleCustomHueChange(course: CalendarRecord, hue: number) {
+		customHues[course.id] = hue;
+		isCustomMode[course.id] = true;
+		const hex = oklchToHex(0.62, 0.22, hue);
+		customHexInputs[course.id] = hex;
+		setCourseColor(course, hex, true);
+	}
+
+	function handleCustomHexInput(course: CalendarRecord, val: string) {
+		customHexInputs[course.id] = val;
+		let clean = val.trim();
+		if (!clean.startsWith("#")) clean = "#" + clean;
+		if (/^#[0-9a-fA-F]{6}$/.test(clean) || /^#[0-9a-fA-F]{3}$/.test(clean)) {
+			setCourseColor(course, clean, true);
+		}
 	}
 
 	function formatCourseDate(dateStr?: string): string {
 		if (!dateStr || !dateStr.trim()) return "—";
-		const normalized = dateStr.includes("T") ? dateStr : dateStr.replace(" ", "T");
+		const normalized = dateStr.includes("T")
+			? dateStr
+			: dateStr.replace(" ", "T");
 		const d = new Date(normalized);
 		if (isNaN(d.getTime())) return dateStr;
 		return d.toLocaleDateString(undefined, {
@@ -81,25 +215,15 @@
 		}
 	}
 
-	async function saveNickname(e: SubmitEvent, courseId: string) {
+	async function saveNickname(e: SubmitEvent, calendarId: string) {
 		e.preventDefault();
 		isSavingNickname = true;
 		try {
 			const trimmedNickname = nicknameInput.trim();
-			await dataState.updateCalendar(courseId, { nickname: trimmedNickname });
-			await fetch(`${POCKETBASE_URL}/api/calendar/nickname`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: pb.authStore.token
-						? `Bearer ${pb.authStore.token}`
-						: "",
-				},
-				body: JSON.stringify({ courseId, nickname: trimmedNickname }),
-			}).catch(() => {});
-			nicknameSuccessId = courseId;
+			await dataState.updateCalendar(calendarId, { nickname: trimmedNickname });
+			nicknameSuccessId = calendarId;
 			setTimeout(() => {
-				if (nicknameSuccessId === courseId) nicknameSuccessId = null;
+				if (nicknameSuccessId === calendarId) nicknameSuccessId = null;
 			}, 3000);
 		} catch (err) {
 			console.error("Failed to save nickname:", err);
@@ -108,30 +232,141 @@
 		}
 	}
 
-	async function clearNickname(courseId: string) {
+	async function clearNickname(calendarId: string) {
 		isSavingNickname = true;
 		try {
-			await dataState.updateCalendar(courseId, { nickname: "" });
-			await fetch(`${POCKETBASE_URL}/api/calendar/nickname`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: pb.authStore.token
-						? `Bearer ${pb.authStore.token}`
-						: "",
-				},
-				body: JSON.stringify({ courseId, nickname: "" }),
-			}).catch(() => {});
+			await dataState.updateCalendar(calendarId, { nickname: "" });
 			nicknameInput = "";
-			nicknameSuccessId = courseId;
+			nicknameSuccessId = calendarId;
 			setTimeout(() => {
-				if (nicknameSuccessId === courseId) nicknameSuccessId = null;
+				if (nicknameSuccessId === calendarId) nicknameSuccessId = null;
 			}, 3000);
 		} catch (err) {
 			console.error("Failed to clear nickname:", err);
 		} finally {
 			isSavingNickname = false;
 		}
+	}
+
+	// Class Schedule & Recurrence state
+	let isScheduleModalOpen = $state(false);
+	let modalCalendarId = $state("");
+	let modalEditEvent = $state<EventRecord | null>(null);
+	let isDeletingScheduleId = $state<string | null>(null);
+
+	const recurringClassEvents = $derived.by(() => {
+		return dataState.events.filter((e) =>
+			Boolean(e.recurr && e.recurr.trim() !== ""),
+		);
+	});
+
+	const eventsByCourseId = $derived.by(() => {
+		const map = new Map<string, EventRecord[]>();
+		for (const evt of recurringClassEvents) {
+			const calId = evt.calendar || evt.expand?.calendar?.id || "";
+			if (!calId) continue;
+			let list = map.get(calId);
+			if (!list) {
+				list = [];
+				map.set(calId, list);
+			}
+			list.push(evt);
+		}
+		return map;
+	});
+
+	function openAddSchedule(courseId: string) {
+		modalCalendarId = courseId;
+		modalEditEvent = null;
+		isScheduleModalOpen = true;
+	}
+
+	function openEditSchedule(evt: EventRecord) {
+		modalCalendarId = evt.calendar || evt.expand?.calendar?.id || "";
+		modalEditEvent = evt;
+		isScheduleModalOpen = true;
+	}
+
+	async function handleDeleteSchedule(evtId: string) {
+		if (
+			confirm(
+				"Are you sure you want to delete this recurring class schedule? All occurrences will be removed.",
+			)
+		) {
+			isDeletingScheduleId = evtId;
+			try {
+				await dataState.deleteEvent(evtId);
+			} catch (err) {
+				console.error("Failed to delete recurring event:", err);
+			} finally {
+				isDeletingScheduleId = null;
+			}
+		}
+	}
+
+	function parseRruleHuman(
+		rrule: string,
+		startIso: string,
+		endIso?: string,
+	): { days: string; time: string; until: string } {
+		let days = "";
+		let until = "";
+
+		const dayMap: Record<string, string> = {
+			MO: "Mon",
+			TU: "Tue",
+			WE: "Wed",
+			TH: "Thu",
+			FR: "Fri",
+			SA: "Sat",
+			SU: "Sun",
+		};
+
+		const parts = rrule.replace(/^RRULE:/i, "").split(";");
+		for (const part of parts) {
+			if (part.startsWith("BYDAY=")) {
+				const dayCodes = part.replace("BYDAY=", "").split(",");
+				days = dayCodes.map((c) => dayMap[c] || c).join(", ");
+			}
+			if (part.startsWith("UNTIL=")) {
+				const rawUntil = part.replace("UNTIL=", "");
+				if (rawUntil.length >= 8) {
+					const y = rawUntil.slice(0, 4);
+					const m = rawUntil.slice(4, 6);
+					const d = rawUntil.slice(6, 8);
+					until = `${m}/${d}/${y}`;
+				}
+			}
+		}
+
+		let timeStr = "";
+		if (startIso) {
+			const sD = new Date(
+				startIso.includes(" ") ? startIso.replace(" ", "T") : startIso,
+			);
+			const sTime = sD.toLocaleTimeString([], {
+				hour: "numeric",
+				minute: "2-digit",
+			});
+			if (endIso) {
+				const eD = new Date(
+					endIso.includes(" ") ? endIso.replace(" ", "T") : endIso,
+				);
+				const eTime = eD.toLocaleTimeString([], {
+					hour: "numeric",
+					minute: "2-digit",
+				});
+				timeStr = `${sTime} - ${eTime}`;
+			} else {
+				timeStr = sTime;
+			}
+		}
+
+		return {
+			days: days || "Weekly",
+			time: timeStr || "Scheduled",
+			until: until ? `until ${until}` : "",
+		};
 	}
 
 	async function handleConnect(e: SubmitEvent) {
@@ -341,8 +576,8 @@
 
 							<!-- Course groups listing with interactive expand panels -->
 							<div class="space-y-2">
-								{#each currentCourses as course, idx (course.id)}
-									{@render courseItem(course, getSwatch(idx))}
+								{#each currentCourses as course (course.id)}
+									{@render courseItem(course)}
 								{/each}
 							</div>
 						</div>
@@ -393,11 +628,8 @@
 									transition:slide={{ duration: 180 }}
 									class="space-y-2 mt-2"
 								>
-									{#each previousCourses as course, idx (course.id)}
-										{@render courseItem(
-											course,
-											getSwatch(currentCourses.length + idx),
-										)}
+									{#each previousCourses as course (course.id)}
+										{@render courseItem(course)}
 									{/each}
 								</div>
 							{/if}
@@ -500,6 +732,7 @@
 {#if showDisconnectModal}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
+		use:portal
 		class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-xs"
 		transition:fade={{ duration: 150 }}
 		onclick={(e) => {
@@ -569,9 +802,9 @@
 {/if}
 
 <!-- Reusable snippet for course section card with interactive details and nickname editing -->
-{#snippet courseItem(course: CalendarRecord, swatchColor: string)}
+{#snippet courseItem(course: CalendarRecord)}
 	{@const isExpanded = expandedCourseId === course.id}
-	{@const courseColor = resolveCalendarColor(course, swatchColor)}
+	{@const courseColor = resolveCalendarColor(course, "#3b82f6")}
 	{@const calId = course.id}
 	{@const isHiddenInSidebar = calendarVisibilityState.isHiddenInSidebar(
 		calId,
@@ -583,12 +816,10 @@
 			: 'hover:border-border/80'}"
 	>
 		<!-- Clickable header card with right-aligned grey outlined visibility button -->
-		<div
-			class="w-full p-2.5 flex items-center justify-between gap-2.5 select-none"
-		>
+		<div class="w-full flex items-stretch select-none">
 			<button
 				type="button"
-				class="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer text-left group"
+				class="flex items-center gap-2.5 min-w-0 flex-1 px-3.5 py-3 cursor-pointer text-left group"
 				onclick={() => toggleExpand(course)}
 				aria-expanded={isExpanded}
 			>
@@ -608,7 +839,7 @@
 			</button>
 
 			<!-- Right controls: Grey outlined button with no text + expand chevron -->
-			<div class="flex items-center gap-2 shrink-0">
+			<div class="flex items-center gap-2 pr-3 shrink-0">
 				<!-- Grey outlined visibility button with no text -->
 				<button
 					type="button"
@@ -633,7 +864,7 @@
 
 				<button
 					type="button"
-					class="p-1 text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+					class="h-full flex items-center px-1 text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
 					onclick={() => toggleExpand(course)}
 					aria-label="Toggle course details"
 				>
@@ -648,8 +879,11 @@
 
 		<!-- Expanded detail panel: dates, IDs, and local nickname editor -->
 		{#if isExpanded}
+			{@const isCustomSelected = isCourseCustom(course)}
+			{@const currentHue = getCourseHue(course)}
+			{@const courseEvents = eventsByCourseId.get(course.id) || []}
 			<div
-				class="px-3 pb-3 pt-1 border-t border-border/50 bg-muted/20 space-y-3"
+				class="@container px-3 pb-3 pt-1 border-t border-border/50 bg-muted/20 space-y-3"
 				transition:slide={{ duration: 180 }}
 			>
 				<!-- Grid of section metadata -->
@@ -703,7 +937,6 @@
 						</span>
 					</div>
 				</div>
-
 				<!-- Local Nickname Editor -->
 				<div class="pt-2 border-t border-border/40">
 					<form onsubmit={(e) => saveNickname(e, course.id)} class="space-y-2">
@@ -763,13 +996,414 @@
 						</p>
 					</form>
 				</div>
+
+				<!-- Class Schedule & Recurrence -->
+				<div class="pt-2 border-t border-border/40 space-y-2.5">
+					<div class="flex items-center justify-between">
+						<span
+							class="text-[11px] font-medium text-muted-foreground flex items-center gap-1"
+						>
+							<ClockIcon class="size-3 text-primary" />
+							Class Schedule
+						</span>
+						<button
+							type="button"
+							onclick={() => openAddSchedule(course.id)}
+							class="flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary/80 transition-colors cursor-pointer px-1.5 py-0.5 rounded hover:bg-primary/10"
+							title="Add recurring class time"
+						>
+							<PlusIcon class="size-3" />
+							<span>Add Class Time</span>
+						</button>
+					</div>
+
+					{#if courseEvents.length === 0}
+						<p class="text-[11px] text-muted-foreground/80 italic">
+							No weekly class times set for this course yet.
+						</p>
+					{:else}
+						<div class="space-y-1.5">
+							{#each courseEvents as evt (evt.id)}
+								{@const parsed = parseRruleHuman(
+									evt.recurr || "",
+									evt.start,
+									evt.end,
+								)}
+								<div
+									class="flex items-center justify-between p-2.5 rounded-lg border bg-background/50 hover:bg-background transition-colors text-xs"
+								>
+									<div class="space-y-0.5 min-w-0">
+										<div class="flex items-center gap-2">
+											<span class="font-medium text-foreground"
+												>{evt.title}</span
+											>
+											<span
+												class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-primary/15 text-primary"
+											>
+												{parsed.days}
+											</span>
+										</div>
+										<div
+											class="flex items-center gap-3 text-[11px] text-muted-foreground"
+										>
+											<span class="flex items-center gap-1">
+												<ClockIcon class="size-3 shrink-0" />
+												<span>{parsed.time}</span>
+											</span>
+											{#if parsed.until}
+												<span class="flex items-center gap-1">
+													<CalendarIcon class="size-3 shrink-0" />
+													<span>{parsed.until}</span>
+												</span>
+											{/if}
+											{#if evt.description}
+												<span
+													class="flex items-center gap-1 truncate max-w-[150px]"
+												>
+													<MapPinIcon class="size-3 shrink-0" />
+													<span class="truncate"
+														>{evt.description.replace(
+															/^Location:\s*/i,
+															"",
+														)}</span
+													>
+												</span>
+											{/if}
+										</div>
+									</div>
+
+									<div class="flex items-center gap-1 shrink-0 ml-2">
+										<button
+											type="button"
+											onclick={() => openEditSchedule(evt)}
+											class="p-1.5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+											title="Edit class schedule"
+											aria-label="Edit class schedule"
+										>
+											<PencilIcon class="size-3.5" />
+										</button>
+										<button
+											type="button"
+											onclick={() => handleDeleteSchedule(evt.id)}
+											disabled={isDeletingScheduleId === evt.id}
+											class="p-1.5 rounded-md text-muted-foreground/70 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+											title="Delete recurring schedule"
+											aria-label="Delete recurring schedule"
+										>
+											<Trash2Icon class="size-3.5" />
+										</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{/if}
+					<!-- Course Color Editor & Canvas Sync -->
+					<div class="pt-2 border-t border-border/40 space-y-2.5">
+						<div class="flex items-center justify-between">
+							<label
+								for="course-color-{course.id}"
+								class="text-[11px] font-medium text-muted-foreground flex items-center gap-1"
+							>
+								<PaletteIcon class="size-3 text-primary" />
+								Course Color
+							</label>
+							{#if colorSavingState[course.id]}
+								<span
+									class="text-[10px] text-muted-foreground animate-pulse inline-flex items-center gap-1"
+									in:fade={{ duration: 150 }}
+								>
+									<RefreshCwIcon class="size-2.5 animate-spin" /> Syncing...
+								</span>
+							{:else if colorSuccessState[course.id]}
+								<span
+									class="text-[10px] text-emerald-400 font-medium inline-flex items-center gap-0.5"
+									in:fade={{ duration: 150 }}
+								>
+									<CheckIcon class="size-3" /> Synced with Canvas!
+								</span>
+							{/if}
+						</div>
+
+						<!-- Section 1: Theme Harmonic Colors (All 3 horizontal if room, all 3 vertical if not) -->
+						<div class="grid grid-cols-1 harmonic-groups-grid gap-3">
+							<!-- 1. Accent & Tints -->
+							<div class="space-y-1">
+								<div
+									class="text-[10px] font-medium text-muted-foreground whitespace-nowrap"
+								>
+									Accent Tints & Shades
+								</div>
+								<div class="flex items-center gap-1.5 flex-wrap">
+									{#each harmonicPalette.accentGroup as swatch (swatch.id)}
+										{@const isSelected =
+											!isCourseCustom(course) &&
+											(course.color?.toLowerCase() ===
+												swatch.hex.toLowerCase() ||
+												courseColor.toLowerCase() === swatch.hex.toLowerCase())}
+										<button
+											type="button"
+											class="relative size-5 rounded-full transition-all duration-150 cursor-pointer flex items-center justify-center {isSelected
+												? 'scale-115 ring-2 ring-foreground/60 ring-offset-2 ring-offset-background'
+												: 'hover:scale-110 opacity-85 hover:opacity-100'}"
+											style="background-color: {swatch.hex};"
+											onclick={() => setCourseColor(course, swatch.hex, false)}
+											title="{swatch.name} ({swatch.hex})"
+											aria-label="Select {swatch.name} color"
+										>
+											{#if isSelected}
+												<span class="size-1.5 rounded-full bg-white shadow-xs"
+												></span>
+											{/if}
+										</button>
+									{/each}
+								</div>
+							</div>
+
+							<!-- 2. Complementary Tints & Shades -->
+							<div class="space-y-1">
+								<div
+									class="text-[10px] font-medium text-muted-foreground whitespace-nowrap"
+								>
+									Complementary Tints & Shades
+								</div>
+								<div class="flex items-center gap-1.5 flex-wrap">
+									{#each harmonicPalette.complementGroup as swatch (swatch.id)}
+										{@const isSelected =
+											!isCourseCustom(course) &&
+											(course.color?.toLowerCase() ===
+												swatch.hex.toLowerCase() ||
+												courseColor.toLowerCase() === swatch.hex.toLowerCase())}
+										<button
+											type="button"
+											class="relative size-5 rounded-full transition-all duration-150 cursor-pointer flex items-center justify-center {isSelected
+												? 'scale-115 ring-2 ring-foreground/60 ring-offset-2 ring-offset-background'
+												: 'hover:scale-110 opacity-85 hover:opacity-100'}"
+											style="background-color: {swatch.hex};"
+											onclick={() => setCourseColor(course, swatch.hex, false)}
+											title="{swatch.name} ({swatch.hex})"
+											aria-label="Select {swatch.name} color"
+										>
+											{#if isSelected}
+												<span class="size-1.5 rounded-full bg-white shadow-xs"
+												></span>
+											{/if}
+										</button>
+									{/each}
+								</div>
+							</div>
+
+							<!-- 3. Adjacent / Split-Complementary -->
+							<div class="space-y-1">
+								<div
+									class="text-[10px] font-medium text-muted-foreground whitespace-nowrap"
+								>
+									Adjacent & Split-Complementary
+								</div>
+								<div class="flex items-center gap-1.5 flex-wrap">
+									{#each harmonicPalette.splitGroup as swatch (swatch.id)}
+										{@const isSelected =
+											!isCourseCustom(course) &&
+											(course.color?.toLowerCase() ===
+												swatch.hex.toLowerCase() ||
+												courseColor.toLowerCase() === swatch.hex.toLowerCase())}
+										<button
+											type="button"
+											class="relative size-5 rounded-full transition-all duration-150 cursor-pointer flex items-center justify-center {isSelected
+												? 'scale-115 ring-2 ring-foreground/60 ring-offset-2 ring-offset-background'
+												: 'hover:scale-110 opacity-85 hover:opacity-100'}"
+											style="background-color: {swatch.hex};"
+											onclick={() => setCourseColor(course, swatch.hex, false)}
+											title="{swatch.name} ({swatch.hex})"
+											aria-label="Select {swatch.name} color"
+										>
+											{#if isSelected}
+												<span class="size-1.5 rounded-full bg-white shadow-xs"
+												></span>
+											{/if}
+										</button>
+									{/each}
+								</div>
+							</div>
+						</div>
+
+						<!-- Section 2: Full Rainbow Spectrum + Custom OKLCH Button -->
+						<div class="space-y-1">
+							<div class="text-[10px] font-medium text-foreground">
+								Rainbow Spectrum & Custom
+							</div>
+							<div class="flex items-center gap-1.5 flex-wrap pt-0.5">
+								{#each CANVAS_PRESET_PALETTE as swatch (swatch.id)}
+									{@const isSelected =
+										!isCourseCustom(course) &&
+										(course.color?.toLowerCase() === swatch.hex.toLowerCase() ||
+											courseColor.toLowerCase() === swatch.hex.toLowerCase())}
+									<button
+										type="button"
+										class="relative size-5 rounded-full transition-all duration-150 cursor-pointer flex items-center justify-center {isSelected
+											? 'scale-115 ring-2 ring-foreground/60 ring-offset-2 ring-offset-background'
+											: 'hover:scale-110 opacity-85 hover:opacity-100'}"
+										style="background-color: {swatch.hex};"
+										onclick={() => setCourseColor(course, swatch.hex, false)}
+										title="{swatch.name} ({swatch.hex})"
+										aria-label="Select {swatch.name} color"
+									>
+										{#if isSelected}
+											<span class="size-1.5 rounded-full bg-white shadow-xs"
+											></span>
+										{/if}
+									</button>
+								{/each}
+
+								<!-- Custom OKLCH Swatch Button -->
+								<button
+									type="button"
+									class="relative size-5 rounded-full transition-all duration-150 cursor-pointer flex items-center justify-center {isCustomSelected
+										? 'scale-115 ring-2 ring-foreground/60 ring-offset-2 ring-offset-background'
+										: 'hover:scale-110 opacity-85 hover:opacity-100'}"
+									style="background: {isCustomSelected
+										? `oklch(0.62 0.22 ${currentHue})`
+										: 'conic-gradient(from 90deg, #f43f5e, #f59e0b, #10b981, #06b6d4, #3b82f6, #6366f1, #a855f7, #f43f5e)'};"
+									onclick={() => {
+										isCustomMode[course.id] = true;
+										handleCustomHueChange(course, currentHue);
+									}}
+									title="Custom OKLCH color"
+									aria-label="Select custom color"
+								>
+									{#if isCustomSelected}
+										<span class="size-1.5 rounded-full bg-white shadow-xs"
+										></span>
+									{/if}
+								</button>
+							</div>
+						</div>
+
+						<!-- Section 3: Custom OKLCH Hue Spectrum & Hex Input (shown when Custom is active) -->
+						{#if isCourseCustom(course)}
+							<div
+								transition:slide={{ duration: 180 }}
+								class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-muted/40 p-2.5 rounded-lg border border-border/40 mt-1.5"
+							>
+								<div class="flex items-center gap-2 min-w-0">
+									<span
+										class="size-3.5 rounded-full shrink-0 shadow-xs border border-white/20"
+										style="background-color: oklch(0.62 0.22 {currentHue});"
+									></span>
+									<span class="text-[11px] font-medium text-foreground">
+										OKLCH Hue
+									</span>
+									<span class="text-[10px] font-mono text-muted-foreground">
+										{currentHue}°
+									</span>
+								</div>
+
+								<div class="flex-1 flex items-center gap-2">
+									<input
+										type="range"
+										min="0"
+										max="360"
+										step="1"
+										value={currentHue}
+										oninput={(e) =>
+											handleCustomHueChange(
+												course,
+												Number((e.target as HTMLInputElement).value),
+											)}
+										class="w-full h-2.5 rounded-full appearance-none cursor-pointer custom-hue-slider shadow-xs"
+										aria-label="Course color hue slider"
+									/>
+									<input
+										type="text"
+										id="course-color-{course.id}"
+										value={getCourseHexInput(course)}
+										oninput={(e) =>
+											handleCustomHexInput(
+												course,
+												(e.target as HTMLInputElement).value,
+											)}
+										placeholder="#3b82f6"
+										maxlength="7"
+										class="w-18 font-mono text-[11px] rounded border border-input bg-background px-1.5 py-0.5 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring text-center"
+										aria-label="Custom color hex code"
+									/>
+								</div>
+							</div>
+						{/if}
+
+						<p class="text-[10px] text-muted-foreground">
+							Sets the course color in Lasso and syncs the custom color to
+							Canvas LMS.
+						</p>
+					</div>
+				</div>
 			</div>
 		{/if}
 	</div>
 {/snippet}
 
+<ClassScheduleModal
+	bind:open={isScheduleModalOpen}
+	initialCalendarId={modalCalendarId}
+	editEvent={modalEditEvent}
+	onClose={() => {
+		isScheduleModalOpen = false;
+		modalEditEvent = null;
+	}}
+/>
+
 <style>
 	h2 {
 		margin: 0px;
+	}
+
+	.custom-hue-slider {
+		background: linear-gradient(
+			to right,
+			oklch(0.65 0.22 0),
+			oklch(0.65 0.22 60),
+			oklch(0.65 0.22 120),
+			oklch(0.65 0.22 180),
+			oklch(0.65 0.22 240),
+			oklch(0.65 0.22 300),
+			oklch(0.65 0.22 360)
+		);
+		outline: none;
+	}
+
+	.custom-hue-slider::-webkit-slider-thumb {
+		appearance: none;
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: #ffffff;
+		border: 2px solid rgba(0, 0, 0, 0.35);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+		cursor: pointer;
+		transition: transform 0.1s ease;
+	}
+
+	.custom-hue-slider::-webkit-slider-thumb:hover {
+		transform: scale(1.15);
+	}
+
+	.custom-hue-slider::-moz-range-thumb {
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: #ffffff;
+		border: 2px solid rgba(0, 0, 0, 0.35);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+		cursor: pointer;
+		transition: transform 0.1s ease;
+	}
+
+	.custom-hue-slider::-moz-range-thumb:hover {
+		transform: scale(1.15);
+	}
+
+	@container (min-width: 500px) {
+		.harmonic-groups-grid {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+		}
 	}
 </style>

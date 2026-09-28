@@ -1,6 +1,7 @@
 <script lang="ts">
 	import X from "@lucide/svelte/icons/x";
 	import type { FormattedTimedEvent } from "./calendarTypes";
+	import { cleanCanvasText } from "$lib/canvasCleaner";
 
 	interface Props {
 		event: FormattedTimedEvent;
@@ -145,7 +146,7 @@
 			<p
 				class="text-[10px] text-muted-foreground border-t border-border/40 pt-1 line-clamp-3 leading-relaxed whitespace-pre-line"
 			>
-				{event.description}
+				{cleanCanvasText(event.description)}
 			</p>
 		{/if}
 	</div>

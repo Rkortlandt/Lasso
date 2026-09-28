@@ -6,16 +6,16 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-	--text: #6b6375;
-	--text-h: #08060d;
-	--bg: #fff;
-	--border: oklch(0.922 0 0);
-	--code-bg: #f4f3ec;
-	--accent: oklch(0.97 0 0);
+	--text: #52525b;
+	--text-h: #09090b;
+	--bg: oklch(0.965 0.002 240);
+	--border: oklch(0.885 0.004 240);
+	--code-bg: oklch(0.935 0.003 240);
+	--accent: oklch(0.935 0.003 240);
 	--accent-bg: rgba(170, 59, 255, 0.1);
 	--accent-border: rgba(170, 59, 255, 0.5);
-	--social-bg: rgba(244, 243, 236, 0.5);
-	--shadow: rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+	--social-bg: rgba(230, 230, 235, 0.5);
+	--shadow: rgba(0, 0, 0, 0.08) 0 10px 15px -3px, rgba(0, 0, 0, 0.04) 0 4px 6px -2px;
 	--sans: system-ui, 'Segoe UI', Roboto, sans-serif;
 	--heading: system-ui, 'Segoe UI', Roboto, sans-serif;
 	--mono: ui-monospace, Consolas, monospace;
@@ -31,21 +31,21 @@
 	@media (max-width: 1024px) {
 		font-size: 16px;
 	}
-	--background: oklch(1 0 0);
+	--background: oklch(0.965 0.002 240);
 	--foreground: oklch(0.145 0 0);
-	--card: oklch(1 0 0);
+	--card: oklch(0.985 0.001 240);
 	--card-foreground: oklch(0.145 0 0);
-	--popover: oklch(1 0 0);
+	--popover: oklch(0.985 0.001 240);
 	--popover-foreground: oklch(0.145 0 0);
 	--primary: oklch(0.508 0.118 165.612);
 	--primary-foreground: oklch(0.979 0.021 166.113);
-	--secondary: oklch(0.967 0.001 286.375);
+	--secondary: oklch(0.925 0.003 240);
 	--secondary-foreground: oklch(0.21 0.006 285.885);
-	--muted: oklch(0.97 0 0);
-	--muted-foreground: oklch(0.556 0 0);
+	--muted: oklch(0.935 0.003 240);
+	--muted-foreground: oklch(0.48 0.01 240);
 	--accent-foreground: oklch(0.205 0 0);
 	--destructive: oklch(0.577 0.245 27.325);
-	--input: oklch(0.922 0 0);
+	--input: oklch(0.885 0.004 240);
 	--ring: oklch(0.708 0 0);
 	--chart-1: oklch(0.833 0.145 321.434);
 	--chart-2: oklch(0.667 0.295 322.15);
@@ -56,64 +56,15 @@
 	--calendar-cell-height: max(30px, calc((100vh - 3.5rem) * 1.4 / 25));
 	--calendar-header-offset: calc(var(--calendar-cell-height) - 1rem);
 	--today-button-height: max(20px, calc(var(--calendar-header-offset) - 0.5rem));
-	--sidebar: oklch(0.985 0 0);
+	--sidebar: oklch(0.945 0.003 240);
 	--sidebar-foreground: oklch(0.145 0 0);
 	--sidebar-primary: oklch(0.596 0.145 163.225);
 	--sidebar-primary-foreground: oklch(0.979 0.021 166.113);
-	--sidebar-accent: oklch(0.97 0 0);
+	--sidebar-accent: oklch(0.915 0.003 240);
 	--sidebar-accent-foreground: oklch(0.205 0 0);
-	--sidebar-border: oklch(0.922 0 0);
+	--sidebar-border: oklch(0.885 0.004 240);
 	--sidebar-ring: oklch(0.708 0 0);
 	--work-session-completed-bg: #4b5563;
-}
-
-@media (prefers-color-scheme: dark) {
-	:root {
-		--text: #9ca3af;
-		--text-h: #f3f4f6;
-		--bg: #16171d;
-		--border: oklch(0.922 0 0);
-		--code-bg: #1f2028;
-		--accent: oklch(0.97 0 0);
-		--accent-bg: rgba(192, 132, 252, 0.15);
-		--accent-border: rgba(192, 132, 252, 0.5);
-		--social-bg: rgba(47, 48, 58, 0.5);
-		--shadow: rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-		--background: oklch(1 0 0);
-		--foreground: oklch(0.145 0 0);
-		--card: oklch(1 0 0);
-		--card-foreground: oklch(0.145 0 0);
-		--popover: oklch(1 0 0);
-		--popover-foreground: oklch(0.145 0 0);
-		--primary: oklch(0.508 0.118 165.612);
-		--primary-foreground: oklch(0.979 0.021 166.113);
-		--secondary: oklch(0.967 0.001 286.375);
-		--secondary-foreground: oklch(0.21 0.006 285.885);
-		--muted: oklch(0.97 0 0);
-		--muted-foreground: oklch(0.556 0 0);
-		--accent-foreground: oklch(0.205 0 0);
-		--destructive: oklch(0.577 0.245 27.325);
-		--input: oklch(0.922 0 0);
-		--ring: oklch(0.708 0 0);
-		--chart-1: oklch(0.833 0.145 321.434);
-		--chart-2: oklch(0.667 0.295 322.15);
-		--chart-3: oklch(0.591 0.293 322.896);
-		--chart-4: oklch(0.518 0.253 323.949);
-		--chart-5: oklch(0.452 0.211 324.591);
-		--radius: 0.625rem;
-		--sidebar: oklch(0.985 0 0);
-		--sidebar-foreground: oklch(0.145 0 0);
-		--sidebar-primary: oklch(0.596 0.145 163.225);
-		--sidebar-primary-foreground: oklch(0.979 0.021 166.113);
-		--sidebar-accent: oklch(0.97 0 0);
-		--sidebar-accent-foreground: oklch(0.205 0 0);
-		--sidebar-border: oklch(0.922 0 0);
-		--sidebar-ring: oklch(0.708 0 0);
-		--work-session-completed-bg: #374151;
-	}
-	#social .button-icon {
-		filter: invert(1) brightness(2);
-	}
 }
 
 body {
@@ -377,6 +328,36 @@ code {
 	--sidebar-border: oklch(1 0 0 / 10%);
 	--sidebar-ring: oklch(0.556 0 0);
 	--work-session-completed-bg: #374151;
+}
+
+/* Colorful Mode: Tint neutral backgrounds, sidebars, cards, and borders with current primary accent */
+:root.colorful,
+.colorful:not(.dark) {
+	--bg: color-mix(in srgb, var(--primary) 13%, oklch(0.965 0.002 240));
+	--background: color-mix(in srgb, var(--primary) 13%, oklch(0.965 0.002 240));
+	--card: color-mix(in srgb, var(--primary) 13%, oklch(0.985 0.001 240));
+	--popover: color-mix(in srgb, var(--primary) 5%, oklch(0.985 0.001 240));
+	--sidebar: color-mix(in srgb, var(--primary) 13%, oklch(0.945 0.003 240));
+	--sidebar-accent: color-mix(in srgb, var(--primary) 9%, oklch(0.915 0.003 240));
+	--muted: color-mix(in srgb, var(--primary) 13%, oklch(0.935 0.003 240));
+	--secondary: color-mix(in srgb, var(--primary) 13%, oklch(0.925 0.003 240));
+	--border: color-mix(in srgb, var(--primary) 14%, oklch(0.885 0.004 240));
+	--sidebar-border: color-mix(in srgb, var(--primary) 14%, oklch(0.885 0.004 240));
+	--input: color-mix(in srgb, var(--primary) 14%, oklch(0.885 0.004 240));
+}
+
+.dark.colorful,
+:root.dark.colorful {
+	--background: color-mix(in srgb, var(--primary) 10%, oklch(0.145 0 0));
+	--card: color-mix(in srgb, var(--primary) 13%, oklch(0.205 0 0));
+	--popover: color-mix(in srgb, var(--primary) 13%, oklch(0.205 0 0));
+	--sidebar: color-mix(in srgb, var(--primary) 13%, oklch(0.205 0 0));
+	--sidebar-accent: color-mix(in srgb, var(--primary) 13%, oklch(0.269 0 0));
+	--muted: color-mix(in srgb, var(--primary) 13%, oklch(0.269 0 0));
+	--secondary: color-mix(in srgb, var(--primary) 13%, oklch(0.274 0.006 286.033));
+	--border: color-mix(in srgb, var(--primary) 14%, oklch(1 0 0 / 10%));
+	--sidebar-border: color-mix(in srgb, var(--primary) 14%, oklch(1 0 0 / 10%));
+	--input: color-mix(in srgb, var(--primary) 14%, oklch(1 0 0 / 15%));
 }
 
 @theme inline {

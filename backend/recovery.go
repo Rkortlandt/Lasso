@@ -1,6 +1,7 @@
 package main
 
 import (
+	"backend/google"
 	"backend/proxies"
 	"log"
 	"time"
@@ -66,7 +67,7 @@ func recoverInterruptedSyncs(app core.App) {
 			log.Printf("[SyncRecovery] Auto-resuming interrupted Google Inbound sync for user %s (%s)...", userEmail, userID)
 			go func(u *core.Record) {
 				startTime := time.Now()
-				res, err := runInboundGoogleSync(app, u)
+				res, err := google.RunInboundGoogleSync(app, u)
 				if err != nil {
 					_ = updateSyncStatusFinished(app, u.Id, SyncOpGoogleImport, "error", "", err.Error(), time.Since(startTime).Milliseconds())
 					log.Printf("[SyncRecovery] Google Inbound sync recovery for user %s failed: %v", u.Id, err)
@@ -81,7 +82,7 @@ func recoverInterruptedSyncs(app core.App) {
 		if syncStatus.GoogleExportStatus() == proxies.SyncStatusStateRunning {
 			log.Printf("[SyncRecovery] Auto-resuming interrupted Google Outbound sync for user %s (%s)...", userEmail, userID)
 			go func(u *core.Record) {
-				_, err := runOutboundGoogleSync(app, u)
+				_, err := google.RunOutboundGoogleSync(app, u)
 				if err != nil {
 					log.Printf("[SyncRecovery] Google Outbound sync recovery for user %s failed: %v", u.Id, err)
 				} else {

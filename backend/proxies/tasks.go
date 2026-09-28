@@ -24,6 +24,15 @@ const (
 	TaskPriorityHigh TaskPriority = "high"
 )
 
+// TaskSource represents valid values for task source.
+type TaskSource string
+
+const (
+	TaskSourceTodo   TaskSource = "todo"
+	TaskSourceCanvas TaskSource = "canvas"
+	TaskSourceGoogle TaskSource = "google"
+)
+
 // Compile-time check ensuring Task implements core.RecordProxy
 var _ core.RecordProxy = (*Task)(nil)
 
@@ -165,3 +174,12 @@ func (t *Task) SourceLink() string {
 func (t *Task) SetSourceLink(link string) {
 	t.Set("source_link", link)
 }
+
+func (t *Task) Source() TaskSource {
+	return TaskSource(t.GetString("source"))
+}
+
+func (t *Task) SetSource(source TaskSource) {
+	t.Set("source", string(source))
+}
+

@@ -1,6 +1,8 @@
 package proxies
 
 import (
+	"time"
+
 	"github.com/pocketbase/pocketbase/core"
 )
 
@@ -136,7 +138,11 @@ func (u *User) GoogleTokenExpiry() string {
 	return u.GetString("google_token_expiry")
 }
 
-func (u *User) SetGoogleTokenExpiry(expiry string) {
+func (u *User) GoogleTokenExpiryTime() time.Time {
+	return u.GetDateTime("google_token_expiry").Time()
+}
+
+func (u *User) SetGoogleTokenExpiry(expiry any) {
 	u.Set("google_token_expiry", expiry)
 }
 

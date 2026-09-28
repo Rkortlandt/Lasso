@@ -6,6 +6,7 @@
 	import RefreshCwIcon from "@lucide/svelte/icons/refresh-cw";
 	import { pb } from "$lib/pocketbase";
 	import CanvasContent from "$lib/components/CanvasContent.svelte";
+	import { cleanCanvasText } from "$lib/canvasCleaner";
 
 	interface Props {
 		title: string;
@@ -54,7 +55,9 @@
 			target &&
 			(target.closest(".group\\/gev") ||
 				target.closest(".group\\/deadline") ||
-				target.closest(".group\\/announcement"))
+				target.closest(".group\\/announcement") ||
+				target.closest(".group\\/all-day-event") ||
+				target.closest(".group\\/task"))
 		) {
 			return;
 		}
@@ -232,7 +235,7 @@
 				<div
 					class="text-xs text-muted-foreground bg-muted/40 p-3 rounded-md border border-border/40 whitespace-pre-wrap"
 				>
-					{description}
+					{cleanCanvasText(description)}
 				</div>
 			{/if}
 			{#if effectiveUrl}

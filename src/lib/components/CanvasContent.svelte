@@ -1,5 +1,6 @@
 <script lang="ts">
 	import DOMPurify from "dompurify";
+	import { cleanCanvasHtml } from "$lib/canvasCleaner";
 
 	interface Props {
 		html?: string;
@@ -41,7 +42,25 @@
 		ADD_ATTR: ["target", "rel"],
 	};
 
-	// Ensure links open in a new tab safely
+	// Remove screenreader-only / external icon elements before sanitizing
+	DOMPurify.addHook("uponSanitizeElement", (node) => {
+		if (node.nodeType === Node.ELEMENT_NODE) {
+			const el = node as Element;
+			const className = el.getAttribute("class") || "";
+			const title = el.getAttribute("title") || "";
+			if (
+				className.includes("screenreader-only") ||
+				className.includes("ui-icon-extlink") ||
+				className.includes("ui-icon") ||
+				/Links to (?:an\s+)?external site/i.test(title)
+			) {
+				el.remove();
+				return;
+			}
+		}
+	});
+
+	// Ensure links open in a new tab safely and clean text nodes inside anchor tags
 	DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 		if (node.tagName === "A") {
 			node.setAttribute("target", "_blank");
@@ -51,7 +70,9 @@
 
 	const sanitizedHtml = $derived.by(() => {
 		if (!html) return "";
-		return DOMPurify.sanitize(html, domPurifyConfig);
+		const preCleaned = cleanCanvasHtml(html);
+		const sanitized = DOMPurify.sanitize(preCleaned, domPurifyConfig);
+		return cleanCanvasHtml(sanitized);
 	});
 </script>
 

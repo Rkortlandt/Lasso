@@ -1,6 +1,7 @@
 <script lang="ts">
 	import MegaphoneIcon from "@lucide/svelte/icons/megaphone";
 	import type { FormattedAnnouncement } from "./calendarTypes";
+	import { cleanCanvasText } from "$lib/canvasCleaner";
 
 	interface Props {
 		announcement: FormattedAnnouncement;
@@ -109,7 +110,7 @@
 			<p
 				class="text-[11px] text-muted-foreground line-clamp-2 leading-relaxed"
 			>
-				{announcement.description.replace(/<[^>]*>?/gm, "")}
+				{cleanCanvasText(announcement.description)}
 			</p>
 		{/if}
 

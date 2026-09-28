@@ -94,6 +94,7 @@ let isEnsuringTodoCalendar = false;
  * Ensures a To Do calendar exists for the user. Creates one optimistically if not present.
  */
 export async function ensureTodoCalendar(): Promise<CalendarRecord | null> {
+	if (dataState.loading || !dataState.isBackendReachable) return null;
 	const existing = getTodoCalendar();
 	if (existing) return existing;
 

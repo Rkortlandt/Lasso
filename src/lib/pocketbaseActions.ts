@@ -37,6 +37,7 @@ export interface TaskRecord {
 	calendar?: string | string[] | Record<string, any>;
 	calendar_id?: string | string[];
 	name: string;
+	source: "todo" | "canvas" | "google";
 	status?: "todo" | "done" | string;
 	priority?: "low" | "med" | "high" | string;
 	grade?: string;

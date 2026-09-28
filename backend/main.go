@@ -1,14 +1,11 @@
 package main
 
 import (
+	"backend/google"
 	"backend/proxies"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/pocketbase/pocketbase"
@@ -23,21 +20,6 @@ import (
 type GenericSuccessResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message,omitempty"`
-}
-
-// Nicknames
-type SetNicknameRequest struct {
-	CourseID   any    `json:"courseId,omitempty"`
-	CalendarID any    `json:"calendarId,omitempty"`
-	ID         any    `json:"id,omitempty"`
-	Nickname   string `json:"nickname"`
-}
-
-type SetNicknameResponse struct {
-	Success    bool   `json:"success"`
-	CourseID   any    `json:"courseId,omitempty"`
-	CalendarID any    `json:"calendarId,omitempty"`
-	Nickname   string `json:"nickname"`
 }
 
 // Canvas LMS
@@ -72,132 +54,34 @@ type CanvasSyncResponse struct {
 	Message       string `json:"message"`
 }
 
-type GetCanvasNicknamesResponse struct {
-	Success   bool              `json:"success"`
-	Nicknames map[string]string `json:"nicknames"`
-}
-
 type GetCanvasColorsResponse struct {
 	CustomColors map[string]string `json:"custom_colors"`
-}
-
-// Google Calendar
-type GoogleConnectRequest struct {
-	AccessToken  string `json:"accessToken"`
-	RefreshToken string `json:"refreshToken"`
-}
-
-type GetGoogleNicknamesResponse struct {
-	Success   bool              `json:"success"`
-	Nicknames map[string]string `json:"nicknames"`
-}
-
-type GetGoogleTokenResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
-	TokenType   string `json:"token_type"`
-}
-
-func normalizeIDString(v any) string {
-	switch val := v.(type) {
-	case float64:
-		return fmt.Sprintf("%.0f", val)
-	case float32:
-		return fmt.Sprintf("%.0f", val)
-	case int:
-		return fmt.Sprintf("%d", val)
-	case int64:
-		return fmt.Sprintf("%d", val)
-	case string:
-		if strings.Contains(val, "e+") || strings.Contains(val, "E+") {
-			var f float64
-			if _, err := fmt.Sscanf(val, "%e", &f); err == nil {
-				return fmt.Sprintf("%.0f", f)
-			}
-		}
-		return strings.TrimSpace(val)
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", v))
-	}
-}
-
-func refreshGoogleToken(app core.App, authRecord *core.Record) (string, error) {
-	user := proxies.NewUser(authRecord)
-	refreshToken := user.GoogleRefreshToken()
-	if refreshToken == "" {
-		return "", fmt.Errorf("no refresh token available")
-	}
-
-	usersCollection, err := app.FindCollectionByNameOrId("users")
-	if err != nil {
-		return "", err
-	}
-
-	googleConfig, ok := usersCollection.OAuth2.GetProviderConfig("google")
-	if !ok || googleConfig.ClientId == "" || googleConfig.ClientSecret == "" {
-		return "", fmt.Errorf("google oauth provider config is incomplete")
-	}
-
-	tokenURL := googleConfig.TokenURL
-	if tokenURL == "" {
-		tokenURL = "https://oauth2.googleapis.com/token"
-	}
-
-	data := url.Values{}
-	data.Set("client_id", googleConfig.ClientId)
-	data.Set("client_secret", googleConfig.ClientSecret)
-	data.Set("refresh_token", refreshToken)
-	data.Set("grant_type", "refresh_token")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.PostForm(tokenURL, data)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("token refresh failed (%d): %s", resp.StatusCode, string(respBytes))
-	}
-
-	var tokenResp GetGoogleTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", err
-	}
-
-	if tokenResp.AccessToken == "" {
-		return "", fmt.Errorf("empty access token in refresh response")
-	}
-
-	authRecord.Set("google_access_token", tokenResp.AccessToken)
-	authRecord.Set("google_connected", true)
-	_ = app.Save(authRecord)
-
-	return tokenResp.AccessToken, nil
 }
 
 func main() {
 	app := pocketbase.New()
 
 	// Intercept OAuth2 authentication to capture and save Google OAuth credentials
+	// AI_GEN=FALSE
+	// HUMAN_REV=TRUE
 	app.OnRecordAuthWithOAuth2Request().BindFunc(func(e *core.RecordAuthWithOAuth2RequestEvent) error {
 		log.Printf("OAuth2 Auth event: provider=%s, email=%s, has_refresh_token=%t", e.ProviderName, e.OAuth2User.Email, e.OAuth2User.RefreshToken != "")
 
 		if e.ProviderName == "google" && e.OAuth2User != nil {
 			if e.Record != nil {
+				user := proxies.NewUser(e.Record)
 				if e.OAuth2User.AccessToken != "" {
-					e.Record.Set("google_access_token", e.OAuth2User.AccessToken)
+					user.SetGoogleAccessToken(e.OAuth2User.AccessToken)
 				}
 				if e.OAuth2User.RefreshToken != "" {
-					e.Record.Set("google_refresh_token", e.OAuth2User.RefreshToken)
+					user.SetGoogleRefreshToken(e.OAuth2User.RefreshToken)
 				}
 				if !e.OAuth2User.Expiry.IsZero() {
-					e.Record.Set("google_token_expiry", e.OAuth2User.Expiry.String())
+					user.SetGoogleTokenExpiry(e.OAuth2User.Expiry)
 				}
-				e.Record.Set("google_connected", true)
+				user.SetGoogleConnected(true)
 				if e.OAuth2User.Email != "" {
-					e.Record.Set("google_email", e.OAuth2User.Email)
+					user.SetGoogleEmail(e.OAuth2User.Email)
 				}
 			} else if e.CreateData != nil {
 				if e.OAuth2User.AccessToken != "" {
@@ -207,7 +91,7 @@ func main() {
 					e.CreateData["google_refresh_token"] = e.OAuth2User.RefreshToken
 				}
 				if !e.OAuth2User.Expiry.IsZero() {
-					e.CreateData["google_token_expiry"] = e.OAuth2User.Expiry.String()
+					e.CreateData["google_token_expiry"] = e.OAuth2User.Expiry
 				}
 				e.CreateData["google_connected"] = true
 				if e.OAuth2User.Email != "" {
@@ -221,20 +105,21 @@ func main() {
 		}
 
 		if e.ProviderName == "google" && e.Record != nil && e.OAuth2User != nil {
+			user := proxies.NewUser(e.Record)
 			if e.OAuth2User.AccessToken != "" {
-				e.Record.Set("google_access_token", e.OAuth2User.AccessToken)
+				user.SetGoogleAccessToken(e.OAuth2User.AccessToken)
 			}
 			if e.OAuth2User.RefreshToken != "" {
-				e.Record.Set("google_refresh_token", e.OAuth2User.RefreshToken)
+				user.SetGoogleRefreshToken(e.OAuth2User.RefreshToken)
 			}
 			if !e.OAuth2User.Expiry.IsZero() {
-				e.Record.Set("google_token_expiry", e.OAuth2User.Expiry.String())
+				user.SetGoogleTokenExpiry(e.OAuth2User.Expiry)
 			}
-			e.Record.Set("google_connected", true)
+			user.SetGoogleConnected(true)
 			if e.OAuth2User.Email != "" {
-				e.Record.Set("google_email", e.OAuth2User.Email)
+				user.SetGoogleEmail(e.OAuth2User.Email)
 			}
-			if err := app.Save(e.Record); err != nil {
+			if err := app.Save(user); err != nil {
 				log.Printf("Failed to save google oauth credentials to record: %v", err)
 			} else {
 				log.Printf("Successfully saved Google OAuth credentials for user %s (%s)", e.Record.Id, e.OAuth2User.Email)
@@ -269,20 +154,36 @@ func main() {
 		return nil
 	})
 
+	// Ensure To Do calendar exists when a task with source "todo" is created
+	app.OnRecordCreate(proxies.CollectionTasks).BindFunc(func(e *core.RecordEvent) error {
+		task := proxies.NewTask(e.Record)
+		userID := task.UserID()
+		if userID != "" && task.Source() == proxies.TaskSourceTodo {
+			todoCal, err := ensureUserTodoCalendar(app, userID)
+			if err == nil && todoCal != nil && task.CalendarID() == "" {
+				task.SetCalendarID(todoCal.Id)
+			}
+		}
+
+		return e.Next()
+	})
+
 	// Ensure an event is never marked as both an announcement and a deadline
-	app.OnRecordCreate("events").BindFunc(func(e *core.RecordEvent) error {
-		if e.Record.GetBool("announcement") {
-			e.Record.Set("deadline", false)
-		} else if e.Record.GetBool("deadline") {
-			e.Record.Set("announcement", false)
+	app.OnRecordCreate(proxies.CollectionEvents).BindFunc(func(e *core.RecordEvent) error {
+		evt := proxies.NewEvent(e.Record)
+		if evt.Announcement() {
+			evt.SetDeadline(false)
+		} else if evt.Deadline() {
+			evt.SetAnnouncement(false)
 		}
 		return e.Next()
 	})
-	app.OnRecordUpdate("events").BindFunc(func(e *core.RecordEvent) error {
-		if e.Record.GetBool("announcement") {
-			e.Record.Set("deadline", false)
-		} else if e.Record.GetBool("deadline") {
-			e.Record.Set("announcement", false)
+	app.OnRecordUpdate(proxies.CollectionEvents).BindFunc(func(e *core.RecordEvent) error {
+		evt := proxies.NewEvent(e.Record)
+		if evt.Announcement() {
+			evt.SetDeadline(false)
+		} else if evt.Deadline() {
+			evt.SetAnnouncement(false)
 		}
 		return e.Next()
 	})
@@ -497,15 +398,16 @@ func main() {
 		}
 
 		// Sanitize any existing events marked as both announcement and deadline (announcement takes precedence)
-		if conflictingEvts, err := app.FindRecordsByFilter("events", "announcement = true && deadline = true", "", 500, 0); err == nil {
+		if conflictingEvts, err := app.FindRecordsByFilter(proxies.CollectionEvents, "announcement = true && deadline = true", "", 500, 0); err == nil {
 			for _, r := range conflictingEvts {
-				r.Set("deadline", false)
-				_ = app.Save(r)
+				evt := proxies.NewEvent(r)
+				evt.SetDeadline(false)
+				_ = app.Save(evt)
 			}
 		}
 
 		// Ensure default To Do calendar exists for all existing users
-		if users, err := app.FindRecordsByFilter("users", "", "", 0, 0); err == nil {
+		if users, err := app.FindRecordsByFilter(proxies.CollectionUsers, "", "", 0, 0); err == nil {
 			for _, u := range users {
 				if _, err := ensureUserTodoCalendar(app, u.Id); err != nil {
 					log.Printf("Failed to ensure To Do calendar for user %s: %v", u.Id, err)
@@ -519,26 +421,19 @@ func main() {
 			recoverInterruptedSyncs(app)
 		}()
 
-		se.Router.POST("/api/calendar/nickname", setNickname(app))
-		se.Router.POST("/api/todo/ensure", handleEnsureTodoCalendar(app))
-
 		// Canvas LMS endpoints
 		se.Router.POST("/api/canvas/verify", handleCanvasVerify(app))
-		se.Router.POST("/api/sync/canvas", canvasSync(app))
-		se.Router.POST("/api/canvas/disconnect", disconnectCanvas(app))
-		se.Router.GET("/api/canvas/nicknames", retriveCanvasNicknames(app))
-		se.Router.POST("/api/canvas/item", getCanvasItemDetails(app))
+		se.Router.POST("/api/sync/canvas", handleCanvasSync(app))
+		se.Router.POST("/api/canvas/disconnect", handleCanvasDisconnect(app))
+		se.Router.POST("/api/canvas/item", handleCanvasItemDetails(app))
+		se.Router.POST("/api/canvas/color", handleCanvasSetColor(app))
+		se.Router.PUT("/api/canvas/color", handleCanvasSetColor(app))
 
 		// Google Calendar endpoints
-		se.Router.POST("/api/google/calendars", handleGoogleCalendars(app))
-		se.Router.POST("/api/google/connect", handleGoogleConnect(app))
-		se.Router.POST("/api/google/disconnect", disconnectGoogle(app))
-		se.Router.GET("/api/google/nicknames", retriveGoogleNicknames(app))
-		se.Router.POST("/api/google/lasso/ensure", handleEnsureLassoCalendar(app))
-		se.Router.POST("/api/google/lasso/purge", handlePurgeLassoCalendar(app))
-		se.Router.POST("/api/google/sync", syncLassoToGoogle(app))
-		se.Router.POST("/api/google/sync-inbound", syncInboundGoogleCalendars(app))
-		se.Router.POST("/api/google/read-events", fetchReadOnlyGoogleEvents(app))
+		se.Router.POST("/api/google/disconnect", handleGoogleDisconnect(app))
+		se.Router.POST("/api/google/lasso/purge", google.HandlePurgeLassoCalendar(app))
+		se.Router.POST("/api/google/sync", google.HandleSyncLassoToGoogle(app))
+		se.Router.POST("/api/google/sync-inbound", google.HandleSyncInboundGoogle(app))
 
 		return se.Next()
 	})
@@ -556,165 +451,20 @@ func getAuth(app core.App, event *core.RequestEvent) (*core.Record, error) {
 	return event.Auth, nil
 }
 
-// setNickname sets or clears a custom course or calendar nickname directly on the calendar object.
-func setNickname(app core.App) func(e *core.RequestEvent) error {
-	return func(e *core.RequestEvent) error {
-		authRecord, err := getAuth(app, e)
-		if err != nil {
-			return err
-		}
-
-		var req SetNicknameRequest
-		body, err := io.ReadAll(e.Request.Body)
-		if err != nil {
-			return e.BadRequestError("Failed to read body", err)
-		}
-		if err := json.Unmarshal(body, &req); err != nil {
-			return e.BadRequestError("Invalid JSON body", err)
-		}
-
-		targetID := ""
-		if req.CourseID != nil {
-			targetID = normalizeIDString(req.CourseID)
-		}
-		if targetID == "" || targetID == "0" {
-			if req.CalendarID != nil {
-				targetID = fmt.Sprintf("%v", req.CalendarID)
-			}
-		}
-		if targetID == "" || targetID == "0" {
-			if req.ID != nil {
-				targetID = fmt.Sprintf("%v", req.ID)
-			}
-		}
-		if targetID == "" || targetID == "0" {
-			return e.BadRequestError("courseId or calendarId is required", nil)
-		}
-
-		trimmedNickname := strings.TrimSpace(req.Nickname)
-		userID := authRecord.Id
-
-		if userID != "" {
-			// 1. Find matching calendar in calendars table by course_id, calendar_id, id, or name
-			cal, _ := app.FindFirstRecordByFilter(
-				"calendars",
-				"user = {:user} && (course_id = {:cid} || calendar_id = {:cid} || id = {:cid} || name = {:cid})",
-				map[string]any{"user": userID, "cid": targetID},
-			)
-
-			if cal != nil {
-				calProxy := proxies.NewCalendar(cal)
-				calProxy.SetNickname(trimmedNickname)
-				if err := app.Save(calProxy); err != nil {
-					log.Printf("Failed to update calendar nickname on record %s: %v", calProxy.Id, err)
-				} else {
-					log.Printf("Successfully updated nickname '%s' on calendar %s (%s)", trimmedNickname, calProxy.Id, calProxy.Name())
-				}
-			} else {
-				// If calendar doesn't have course_id yet, find by Canvas course name
-				if authRecord != nil {
-					authUser := proxies.NewUser(authRecord)
-					canvasURL := authUser.CanvasURL()
-					canvasToken := authUser.CanvasToken()
-					if canvasURL != "" && canvasToken != "" {
-						coursesURL := fmt.Sprintf("%s/api/v1/courses?per_page=100", canvasURL)
-						client := &http.Client{Timeout: 10 * time.Second}
-						if req, err := http.NewRequest("GET", coursesURL, nil); err == nil {
-							req.Header.Set("Authorization", "Bearer "+canvasToken)
-							req.Header.Set("Accept", "application/json")
-							if resp, err := client.Do(req); err == nil && resp.StatusCode == http.StatusOK {
-								var rawCourses []map[string]any
-								bodyBytes, _ := io.ReadAll(resp.Body)
-								resp.Body.Close()
-								if json.Unmarshal(bodyBytes, &rawCourses) == nil {
-									for _, c := range rawCourses {
-										if normalizeIDString(c["id"]) == targetID {
-											cName, _ := c["name"].(string)
-											cName = strings.TrimSpace(cName)
-											matchingCalRec, _ := app.FindFirstRecordByFilter(
-												"calendars",
-												"user = {:user} && name = {:name}",
-												map[string]any{"user": userID, "name": cName},
-											)
-											if matchingCalRec != nil {
-												matchingCal := proxies.NewCalendar(matchingCalRec)
-												matchingCal.SetCourseID(targetID)
-												matchingCal.SetNickname(trimmedNickname)
-												_ = app.Save(matchingCal)
-												log.Printf("Found calendar by Canvas course name %s and saved nickname '%s'", cName, trimmedNickname)
-											}
-											break
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		return e.JSON(http.StatusOK, SetNicknameResponse{
-			Success:    true,
-			CourseID:   req.CourseID,
-			CalendarID: req.CalendarID,
-			Nickname:   trimmedNickname,
-		})
-	}
-}
-
-func retriveCanvasNicknames(app core.App) func(e *core.RequestEvent) error {
-	return func(e *core.RequestEvent) error {
-		authRecord, err := getAuth(app, e)
-		if err != nil {
-			return err
-		}
-		nicknames := map[string]string{}
-
-		if authRecord != nil {
-			records, err := app.FindRecordsByFilter(
-				"calendars",
-				"user = {:user} && nickname != ''",
-				"",
-				200,
-				0,
-				map[string]any{"user": authRecord.Id},
-			)
-			if err == nil {
-				for _, r := range records {
-					cal := proxies.NewCalendar(r)
-					nick := cal.Nickname()
-					if nick != "" {
-						if cid := cal.CourseID(); cid != "" {
-							nicknames[cid] = nick
-						}
-						nicknames[cal.Name()] = nick
-						nicknames[cal.Id] = nick
-					}
-				}
-			}
-		}
-
-		return e.JSON(http.StatusOK, GetCanvasNicknamesResponse{
-			Success:   true,
-			Nicknames: nicknames,
-		})
-	}
-}
-
-// disconnectCanvas clears stored Canvas credentials from the user record.
-func disconnectCanvas(app core.App) func(e *core.RequestEvent) error {
+// handleCanvasDisconnect clears stored Canvas credentials from the user record.
+func handleCanvasDisconnect(app core.App) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		authRecord, err := getAuth(app, e)
 		if err != nil {
 			return err
 		}
 		if authRecord != nil {
-			authRecord.Set("canvas_url", "")
-			authRecord.Set("canvas_token", "")
-			authRecord.Set("canvas_connected", false)
-			authRecord.Set("canvas_student_name", "")
-			_ = app.Save(authRecord)
+			user := proxies.NewUser(authRecord)
+			user.SetCanvasURL("")
+			user.SetCanvasToken("")
+			user.SetCanvasConnected(false)
+			user.SetCanvasStudentName("")
+			_ = app.Save(user)
 		}
 		return e.JSON(http.StatusOK, GenericSuccessResponse{
 			Success: true,
@@ -726,89 +476,20 @@ func disconnectCanvas(app core.App) func(e *core.RequestEvent) error {
 // Google Calendar Handlers
 // -----------------------------------------------------------------------------
 
-// handleGoogleConnect saves Google OAuth tokens to the authenticated user record.
-func handleGoogleConnect(app core.App) func(e *core.RequestEvent) error {
-	return func(e *core.RequestEvent) error {
-		authRecord, err := getAuth(app, e)
-		if err != nil {
-			return err
-		}
-
-		var req GoogleConnectRequest
-		body, _ := io.ReadAll(e.Request.Body)
-		if len(body) > 0 {
-			_ = json.Unmarshal(body, &req)
-		}
-
-		if req.AccessToken != "" {
-			authRecord.Set("google_access_token", req.AccessToken)
-		}
-		if req.RefreshToken != "" {
-			authRecord.Set("google_refresh_token", req.RefreshToken)
-		}
-		authRecord.Set("google_connected", true)
-		if err := app.Save(authRecord); err != nil {
-			return e.BadRequestError("Failed to save google tokens", err)
-		}
-
-		return e.JSON(http.StatusOK, GenericSuccessResponse{
-			Success: true,
-		})
-	}
-}
-
-// retriveGoogleNicknames retrieves all saved calendar nicknames from calendar objects.
-func retriveGoogleNicknames(app core.App) func(e *core.RequestEvent) error {
-	return func(e *core.RequestEvent) error {
-		authRecord, err := getAuth(app, e)
-		if err != nil {
-			return err
-		}
-		nicknames := map[string]string{}
-
-		if authRecord != nil {
-			records, err := app.FindRecordsByFilter(
-				"calendars",
-				"user = {:user} && nickname != ''",
-				"",
-				200,
-				0,
-				map[string]any{"user": authRecord.Id},
-			)
-			if err == nil {
-				for _, r := range records {
-					nick := r.GetString("nickname")
-					if nick != "" {
-						if cid := r.GetString("calendar_id"); cid != "" {
-							nicknames[cid] = nick
-						}
-						nicknames[r.GetString("name")] = nick
-						nicknames[r.Id] = nick
-					}
-				}
-			}
-		}
-
-		return e.JSON(http.StatusOK, GetGoogleNicknamesResponse{
-			Success:   true,
-			Nicknames: nicknames,
-		})
-	}
-}
-
-// disconnectGoogle clears stored Google Calendar credentials from the user record.
-func disconnectGoogle(app core.App) func(e *core.RequestEvent) error {
+// handleGoogleDisconnect clears stored Google Calendar credentials from the user record.
+func handleGoogleDisconnect(app core.App) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		authRecord, err := getAuth(app, e)
 		if err != nil {
 			return err
 		}
 		if authRecord != nil {
-			authRecord.Set("google_access_token", "")
-			authRecord.Set("google_refresh_token", "")
-			authRecord.Set("google_token_expiry", "")
-			authRecord.Set("google_connected", false)
-			_ = app.Save(authRecord)
+			user := proxies.NewUser(authRecord)
+			user.SetGoogleAccessToken("")
+			user.SetGoogleRefreshToken("")
+			user.SetGoogleTokenExpiry("")
+			user.SetGoogleConnected(false)
+			_ = app.Save(user)
 		}
 		return e.JSON(http.StatusOK, GenericSuccessResponse{
 			Success: true,
@@ -849,24 +530,4 @@ func ensureUserTodoCalendar(app core.App, userID string) (*core.Record, error) {
 
 	log.Printf("Created default To Do calendar %s for user %s", newCal.Id, userID)
 	return newCal.ProxyRecord(), nil
-}
-
-// handleEnsureTodoCalendar handles POST /api/todo/ensure to create or fetch the user's To Do calendar.
-func handleEnsureTodoCalendar(app core.App) func(e *core.RequestEvent) error {
-	return func(e *core.RequestEvent) error {
-		authRecord, err := getAuth(app, e)
-		if err != nil {
-			return err
-		}
-
-		cal, err := ensureUserTodoCalendar(app, authRecord.Id)
-		if err != nil {
-			return e.BadRequestError("Failed to ensure To Do calendar", err)
-		}
-
-		return e.JSON(http.StatusOK, map[string]any{
-			"success":  true,
-			"calendar": cal,
-		})
-	}
 }
