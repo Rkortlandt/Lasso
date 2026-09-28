@@ -1,6 +1,7 @@
 package main
 
 import (
+	"backend/canvas"
 	"backend/google"
 	"backend/proxies"
 	"fmt"
@@ -20,42 +21,6 @@ import (
 type GenericSuccessResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message,omitempty"`
-}
-
-// Canvas LMS
-type CanvasVerifyRequest struct {
-	CanvasURL   string `json:"canvasUrl"`
-	CanvasToken string `json:"canvasToken"`
-}
-
-type CanvasUser struct {
-	ID        int    `json:"id"`
-	Name      string `json:"name"`
-	ShortName string `json:"short_name,omitempty"`
-	Email     string `json:"primary_email,omitempty"`
-	AvatarURL string `json:"avatar_url,omitempty"`
-}
-
-type CanvasVerifyResponse struct {
-	Success     bool           `json:"success"`
-	StudentName string         `json:"studentName"`
-	StudentID   int            `json:"studentId"`
-	AvatarURL   string         `json:"avatarUrl"`
-	CourseCount int            `json:"courseCount"`
-	Courses     []CanvasCourse `json:"courses"`
-}
-
-type CanvasSyncResponse struct {
-	Success       bool   `json:"success"`
-	CoursesSynced int    `json:"coursesSynced"`
-	TasksSynced   int    `json:"tasksSynced"`
-	TasksCreated  int    `json:"tasksCreated"`
-	TasksUpdated  int    `json:"tasksUpdated"`
-	Message       string `json:"message"`
-}
-
-type GetCanvasColorsResponse struct {
-	CustomColors map[string]string `json:"custom_colors"`
 }
 
 func main() {
@@ -422,12 +387,12 @@ func main() {
 		}()
 
 		// Canvas LMS endpoints
-		se.Router.POST("/api/canvas/verify", handleCanvasVerify(app))
-		se.Router.POST("/api/sync/canvas", handleCanvasSync(app))
+		se.Router.POST("/api/canvas/verify", canvas.HandleCanvasVerify(app))
+		se.Router.POST("/api/sync/canvas", canvas.HandleCanvasSync(app))
 		se.Router.POST("/api/canvas/disconnect", handleCanvasDisconnect(app))
-		se.Router.POST("/api/canvas/item", handleCanvasItemDetails(app))
-		se.Router.POST("/api/canvas/color", handleCanvasSetColor(app))
-		se.Router.PUT("/api/canvas/color", handleCanvasSetColor(app))
+		se.Router.POST("/api/canvas/item", canvas.HandleCanvasItemDetails(app))
+		se.Router.POST("/api/canvas/color", canvas.HandleCanvasSetColor(app))
+		se.Router.PUT("/api/canvas/color", canvas.HandleCanvasSetColor(app))
 
 		// Google Calendar endpoints
 		se.Router.POST("/api/google/disconnect", handleGoogleDisconnect(app))

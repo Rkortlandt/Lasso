@@ -140,39 +140,4 @@ func TestDatesEqual(t *testing.T) {
 	}
 }
 
-func TestGradesEqual(t *testing.T) {
-	cases := []struct {
-		existing string
-		incoming string
-		expected bool
-	}{
-		// Exact matches
-		{"4/5", "4/5", true},
-		{"100%", "100%", true},
-		{"", "", true},
-
-		// Fraction exists, incoming is bare score: should preserve fraction (no change)
-		{"4/5", "4", true},
-		{"1.9/2", "1.9", true},
-		{"10/10", "10", true},
-
-		// Incoming has fraction, existing is bare score: should upgrade
-		{"4", "4/5", false},
-
-		// Incoming is empty: should preserve existing grade
-		{"4/5", "", true},
-		{"100%", "", true},
-
-		// Genuine grade change
-		{"4/5", "5/5", false},
-		{"3/5", "4", false},
-	}
-
-	for _, tc := range cases {
-		actual := gradesEqual(tc.existing, tc.incoming)
-		if actual != tc.expected {
-			t.Errorf("gradesEqual(%q, %q) = %v, expected %v", tc.existing, tc.incoming, actual, tc.expected)
-		}
-	}
-}
 

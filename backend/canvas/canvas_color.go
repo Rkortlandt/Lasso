@@ -1,4 +1,4 @@
-package main
+package canvas
 
 import (
 	"backend/proxies"
@@ -46,8 +46,8 @@ func normalizeHexColor(raw string) (string, error) {
 	return strings.ToLower(s), nil
 }
 
-// handleCanvasSetColor updates a course's custom color both on Canvas LMS and locally in PocketBase.
-func handleCanvasSetColor(app core.App) func(e *core.RequestEvent) error {
+// HandleCanvasSetColor updates a course's custom color both on Canvas LMS and locally in PocketBase.
+func HandleCanvasSetColor(app core.App) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		authRecord, err := getAuth(app, e)
 		if err != nil {

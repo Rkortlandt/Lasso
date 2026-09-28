@@ -1,4 +1,4 @@
-package main
+package canvas
 
 import (
 	"backend/proxies"
@@ -20,8 +20,8 @@ type CanvasItemRequest struct {
 	SourceLink string `json:"sourceLink"`
 }
 
-// handleCanvasItemDetails handles the incoming POST /api/canvas/item HTTP request.
-func handleCanvasItemDetails(app core.App) func(e *core.RequestEvent) error {
+// HandleCanvasItemDetails handles the incoming POST /api/canvas/item HTTP request.
+func HandleCanvasItemDetails(app core.App) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		authRecord, err := getAuth(app, e)
 		if err != nil {

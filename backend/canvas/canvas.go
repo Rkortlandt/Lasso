@@ -1,4 +1,4 @@
-package main
+package canvas
 
 import (
 	"backend/google"
@@ -11,11 +11,165 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 )
+
+var syncStatusMu sync.Mutex
+
+type SyncOperation string
+
+const (
+	SyncOpCanvas SyncOperation = "canvas"
+)
+
+// Canvas LMS Request & Response Types
+type CanvasVerifyRequest struct {
+	CanvasURL   string `json:"canvasUrl"`
+	CanvasToken string `json:"canvasToken"`
+}
+
+type CanvasUser struct {
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	ShortName string `json:"short_name,omitempty"`
+	Email     string `json:"primary_email,omitempty"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+}
+
+type CanvasVerifyResponse struct {
+	Success     bool           `json:"success"`
+	StudentName string         `json:"studentName"`
+	StudentID   int            `json:"studentId"`
+	AvatarURL   string         `json:"avatarUrl"`
+	CourseCount int            `json:"courseCount"`
+	Courses     []CanvasCourse `json:"courses"`
+}
+
+type CanvasSyncResponse struct {
+	Success       bool   `json:"success"`
+	CoursesSynced int    `json:"coursesSynced"`
+	TasksSynced   int    `json:"tasksSynced"`
+	TasksCreated  int    `json:"tasksCreated"`
+	TasksUpdated  int    `json:"tasksUpdated"`
+	Message       string `json:"message"`
+}
+
+type GetCanvasColorsResponse struct {
+	CustomColors map[string]string `json:"custom_colors"`
+}
+
+func getAuth(app core.App, event *core.RequestEvent) (*core.Record, error) {
+	if event.Auth == nil {
+		return nil, event.UnauthorizedError("Authentication required", nil)
+	}
+	return event.Auth, nil
+}
+
+func getOrCreateSyncStatus(app core.App, userID string) (*proxies.SyncStatus, error) {
+	record, err := app.FindFirstRecordByFilter(proxies.CollectionSyncStatus, "user = {:user}", map[string]any{
+		"user": userID,
+	})
+	if err == nil && record != nil {
+		return proxies.NewSyncStatus(record), nil
+	}
+
+	col, err := app.FindCollectionByNameOrId(proxies.CollectionSyncStatus)
+	if err != nil {
+		return nil, fmt.Errorf("sync_status collection not found: %w", err)
+	}
+
+	newRec := proxies.NewSyncStatusRecord(col)
+	newRec.SetUserID(userID)
+	newRec.SetCanvasStatus(proxies.SyncStatusStateIdle)
+	newRec.SetGoogleImportStatus(proxies.SyncStatusStateIdle)
+	newRec.SetGoogleExportStatus(proxies.SyncStatusStateIdle)
+	newRec.SetGoogleExportEnabled(true)
+	newRec.SetHistory([]proxies.SyncHistoryEntry{})
+
+	if err := app.Save(newRec); err != nil {
+		return nil, fmt.Errorf("failed to create sync_status record: %w", err)
+	}
+	return newRec, nil
+}
+
+func updateSyncStatusRunning(app core.App, userID string, op SyncOperation) error {
+	syncStatusMu.Lock()
+	defer syncStatusMu.Unlock()
+
+	rec, err := getOrCreateSyncStatus(app, userID)
+	if err != nil {
+		return err
+	}
+
+	switch op {
+	case SyncOpCanvas:
+		rec.SetCanvasStatus(proxies.SyncStatusStateRunning)
+		rec.SetCanvasError("")
+	}
+
+	return app.Save(rec)
+}
+
+func updateSyncStatusFinished(
+	app core.App,
+	userID string,
+	op SyncOperation,
+	status string,
+	feedback string,
+	errMsg string,
+	durationMs int64,
+) error {
+	syncStatusMu.Lock()
+	defer syncStatusMu.Unlock()
+
+	rec, err := getOrCreateSyncStatus(app, userID)
+	if err != nil {
+		return err
+	}
+
+	nowISO := time.Now().UTC().Format(time.RFC3339)
+
+	switch op {
+	case SyncOpCanvas:
+		rec.SetCanvasStatus(proxies.SyncStatusStateIdle)
+		if status == "success" {
+			rec.SetCanvasSyncedAt(nowISO)
+			rec.SetCanvasFeedback(feedback)
+			rec.SetCanvasError("")
+		} else {
+			rec.SetCanvasError(errMsg)
+		}
+	}
+
+	history := rec.History()
+
+	entry := proxies.SyncHistoryEntry{
+		ID:         fmt.Sprintf("%d", time.Now().UnixNano()),
+		Service:    proxies.SyncService(op),
+		Status:     proxies.SyncResult(status),
+		Timestamp:  nowISO,
+		DurationMS: durationMs,
+		Feedback:   feedback,
+		Error:      errMsg,
+	}
+
+	history = append([]proxies.SyncHistoryEntry{entry}, history...)
+	if len(history) > 50 {
+		history = history[:50]
+	}
+
+	rec.SetHistory(history)
+
+	if err := app.Save(rec); err != nil {
+		log.Printf("Failed to save sync_status for user %s: %v", userID, err)
+		return err
+	}
+	return nil
+}
 
 var (
 	canvasScreenreaderSpanRegex = regexp.MustCompile(`(?i)<(?:span|i)[^>]*class=["'][^"']*(?:screenreader-only|ui-icon-extlink|ui-icon)[^"']*["'][^>]*>[\s\S]*?</(?:span|i)>`)
@@ -100,8 +254,8 @@ func verifyCanvasAuth(httpClient *http.Client, institutionURL string, apiToken s
 	return nil
 }
 
-// handleCanvasVerify verifies credentials, fetches courses & real colors, and syncs account info.
-func handleCanvasVerify(app core.App) func(event *core.RequestEvent) error {
+// HandleCanvasVerify verifies credentials, fetches courses & real colors, and syncs account info.
+func HandleCanvasVerify(app core.App) func(event *core.RequestEvent) error {
 	return func(event *core.RequestEvent) error {
 		authRecord, err := getAuth(app, event)
 
@@ -692,15 +846,15 @@ func upsertTaskRecord(
 	return false, true, app.Save(task)
 }
 
-// handleCanvasSync handles the incoming POST /api/sync/canvas HTTP request.
-func handleCanvasSync(app core.App) func(event *core.RequestEvent) error {
+// HandleCanvasSync handles the incoming POST /api/sync/canvas HTTP request.
+func HandleCanvasSync(app core.App) func(event *core.RequestEvent) error {
 	return func(event *core.RequestEvent) error {
 		authRecord, err := getAuth(app, event)
 		if err != nil {
 			return err
 		}
 
-		resp, err := runCanvasSyncForUser(app, authRecord)
+		resp, err := RunCanvasSyncForUser(app, authRecord)
 		if err != nil {
 			return event.BadRequestError(err.Error(), err)
 		}
@@ -709,8 +863,8 @@ func handleCanvasSync(app core.App) func(event *core.RequestEvent) error {
 	}
 }
 
-// runCanvasSyncForUser coordinates the full Canvas LMS fetch and persistence for a specific user.
-func runCanvasSyncForUser(app core.App, authRecord *core.Record) (*CanvasSyncResponse, error) {
+// RunCanvasSyncForUser coordinates the full Canvas LMS fetch and persistence for a specific user.
+func RunCanvasSyncForUser(app core.App, authRecord *core.Record) (*CanvasSyncResponse, error) {
 	if authRecord == nil {
 		return nil, fmt.Errorf("authentication required")
 	}

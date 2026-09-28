@@ -1,6 +1,7 @@
 package main
 
 import (
+	"backend/canvas"
 	"backend/google"
 	"backend/proxies"
 	"log"
@@ -53,7 +54,7 @@ func recoverInterruptedSyncs(app core.App) {
 		if syncStatus.CanvasStatus() == proxies.SyncStatusStateRunning {
 			log.Printf("[SyncRecovery] Auto-resuming interrupted Canvas sync for user %s (%s)...", userEmail, userID)
 			go func(u *core.Record) {
-				_, err := runCanvasSyncForUser(app, u)
+				_, err := canvas.RunCanvasSyncForUser(app, u)
 				if err != nil {
 					log.Printf("[SyncRecovery] Canvas sync recovery for user %s failed: %v", u.Id, err)
 				} else {
